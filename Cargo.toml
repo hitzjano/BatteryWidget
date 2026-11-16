@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+authors = ["BatteryWidget contributors"]
+repository = "https://github.com/hitzjano/BatteryWidget"
+keywords = ["battery", "bluetooth", "hid", "logitech", "windows"]
+categories = ["hardware-support", "os::windows-apis", "gui"]
+
+[workspace.dependencies]
+log = { version = "0.4", features = ["std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+windows = "0.62"
+windows-collections = "0.3"
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+strip = true
+# Keep unwinding: a panic in one device worker must not take the widget down.
+panic = "unwind"

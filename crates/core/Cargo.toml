@@ -1,0 +1,44 @@
+[package]
+name = "battery-widget-core"
+readme = "../../README.md"
+description = "Device discovery and battery protocols (Bluetooth, Logitech HID++, G HUB, vendor HID, Xbox) for BatteryWidget"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-collections.workspace = true
+
+[target.'cfg(windows)'.dependencies.windows]
+workspace = true
+features = [
+    "Devices_Bluetooth",
+    "Devices_Enumeration",
+    "Devices_Power",
+    "Devices_Radios",
+    "Foundation",
+    "Foundation_Collections",
+    "Gaming_Input",
+    "System_Power",
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Devices_HumanInterfaceDevice",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_IO",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_UI_Input_XboxController",
+]
