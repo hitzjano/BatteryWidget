@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-18
+
+### Security
+
+- Hardened against DLL search-order hijacking: `uxtheme.dll` is now loaded from System32
+  only (`LoadLibraryExW` with `LOAD_LIBRARY_SEARCH_SYSTEM32`), the process restricts
+  run-time DLL loads to System32 at start-up (`SetDefaultDllDirectories`), and statically
+  imported dependencies are pinned to System32 via `/DEPENDENTLOADFLAG:0x800`.
+- Enabled Control Flow Guard (`-C control-flow-guard`) for the MSVC build.
+
+### Changed
+
+- CI now runs a RustSec dependency audit (`cargo audit`) on every push and pull request.
+
 ## [0.1.0] - 2026-11-16
 
 ### Added
@@ -40,5 +54,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Low-battery and fully-charged notifications with hysteresis and cool-down.
 - Optional start with Windows (per-user `Run` key).
 
-[Unreleased]: https://github.com/hitzjano/BatteryWidget/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/hitzjano/BatteryWidget/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/hitzjano/BatteryWidget/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/hitzjano/BatteryWidget/releases/tag/v0.1.0
