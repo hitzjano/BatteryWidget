@@ -42,7 +42,7 @@ account, no telemetry.
 
 ## Installation
 
-### One-liner (PowerShell)
+### PowerShell
 
 ```powershell
 irm https://raw.githubusercontent.com/hitzjano/BatteryWidget/main/install.ps1 | iex
