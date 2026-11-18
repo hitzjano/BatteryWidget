@@ -14,7 +14,10 @@ use windows::Win32::Foundation::{
     GetLastError, ERROR_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::InvalidateRect;
-use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW};
+use windows::Win32::System::LibraryLoader::{
+    GetModuleHandleW, GetProcAddress, LoadLibraryExW, SetDefaultDllDirectories,
+    LOAD_LIBRARY_SEARCH_SYSTEM32,
+};
 use windows::Win32::System::Threading::{CreateMutexW, GetCurrentThreadId};
 use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows::Win32::UI::HiDpi::{
@@ -1094,7 +1097,10 @@ fn allow_dark_menus() {
     // SAFETY: ordinals 135 (SetPreferredAppMode) and 136 (FlushMenuThemes) have had these
     // signatures since Windows 10 1903; both are looked up and may be absent.
     unsafe {
-        let Ok(uxtheme) = LoadLibraryW(w!("uxtheme.dll")) else {
+        // Load from System32 only: uxtheme is not a KnownDLL, so a plain name would also
+        // search the (user-writable) directory of the executable first.
+        let Ok(uxtheme) = LoadLibraryExW(w!("uxtheme.dll"), None, LOAD_LIBRARY_SEARCH_SYSTEM32)
+        else {
             return;
         };
         if let Some(function) = GetProcAddress(uxtheme, PCSTR(135 as *const u8)) {
@@ -1121,6 +1127,11 @@ pub fn run() {
     // SAFETY: Win32 start-up sequence on the main thread. Handles created here live
     // until the process exits.
     unsafe {
+        // Restrict run-time DLL loads to System32, closing the search-order gap for every
+        // library this process loads after start-up (the manifest-driven implicit imports
+        // are additionally pinned at link time via /DEPENDENTLOADFLAG).
+        let _ = SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32);
+
         // One instance per session. The mutex is released by the system on exit.
         let _instance = CreateMutexW(None, true, w!("Local\\BatteryWidget.SingleInstance"));
         if GetLastError() == ERROR_ALREADY_EXISTS {

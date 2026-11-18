@@ -1,0 +1,16 @@
+# Hardening flags for the shipped Windows (MSVC) build.
+#
+#   control-flow-guard          enables Control Flow Guard instrumentation and passes
+#                               /guard:cf to the linker (hardens the unsafe FFI surface).
+#   /DEPENDENTLOADFLAG:0x800    makes the loader resolve statically imported, non-KnownDLL
+#                               dependencies (d2d1, dwrite, hid, cfgmgr32, xinput1_4, …)
+#                               from System32 only, closing the DLL search-order gap even
+#                               for imports resolved before main() runs.
+#
+# Scoped to the MSVC target: these are MSVC-linker options and the official release is
+# built with the MSVC toolchain. The MinGW cross-build is unaffected.
+[target.x86_64-pc-windows-msvc]
+rustflags = [
+    "-C", "control-flow-guard",
+    "-C", "link-arg=/DEPENDENTLOADFLAG:0x800",
+]
