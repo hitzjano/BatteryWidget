@@ -42,6 +42,16 @@ account, no telemetry.
 
 ## Installation
 
+### One-liner (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/hitzjano/BatteryWidget/main/install.ps1 | iex
+```
+
+Downloads the newest release, verifies its SHA-256 checksum, installs it to
+`%LOCALAPPDATA%\Programs\BatteryWidget`, adds a Start menu shortcut and starts it.
+No admin rights needed; run it again to update. See [`install.ps1`](install.ps1).
+
 ### Download
 
 1. Get `BatteryWidget.exe` from the [latest release](https://github.com/hitzjano/BatteryWidget/releases/latest).
