@@ -243,11 +243,12 @@ impl Renderer {
         }
     }
 
-    /// Draw `layout` and show it in `hwnd` with its top-left corner at `origin`.
+    /// Draw `layout` and show it in `hwnd`, moving its top-left corner to `origin` (screen
+    /// coordinates) if given. A child window is moved by the caller instead.
     pub fn present(
         &self,
         hwnd: HWND,
-        origin: POINT,
+        origin: Option<POINT>,
         layout: &Layout,
         devices: &[Device],
         palette: &Palette,
@@ -335,7 +336,7 @@ impl Renderer {
             UpdateLayeredWindow(
                 hwnd,
                 Some(surface.screen),
-                Some(&origin),
+                origin.as_ref().map(|o| o as *const POINT),
                 Some(&size),
                 Some(surface.memory),
                 Some(&POINT::default()),

@@ -15,8 +15,10 @@ use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
 };
+use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::Accessibility::{
     CUIAutomation, IUIAutomation, TreeScope_Descendants, UIA_BoundingRectanglePropertyId,
+    UIA_ProcessIdPropertyId,
 };
 use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, PostMessageW};
 
@@ -172,7 +174,8 @@ impl Probe {
 }
 
 /// One cross-process call: the horizontal spans of everything inside the taskbar, sorted.
-/// Containers and elements right of `limit` (the notification area) are left out.
+/// Containers, elements right of `limit` (the notification area) and the widget itself
+/// (which lives inside the taskbar) are left out.
 fn measure(automation: &IUIAutomation, taskbar: HWND, limit: i32) -> Result<Spans> {
     let mut bar = RECT::default();
     // SAFETY: COM calls on interfaces owned by this thread; out-pointers are live locals.
@@ -180,16 +183,21 @@ fn measure(automation: &IUIAutomation, taskbar: HWND, limit: i32) -> Result<Span
         GetWindowRect(taskbar, &mut bar)?;
         let cache = automation.CreateCacheRequest()?;
         cache.AddProperty(UIA_BoundingRectanglePropertyId)?;
+        cache.AddProperty(UIA_ProcessIdPropertyId)?;
+        let own = GetCurrentProcessId() as i32;
         let root = automation.ElementFromHandle(taskbar)?;
         let everything = automation.CreateTrueCondition()?;
         let elements = root.FindAllBuildCache(TreeScope_Descendants, &everything, &cache)?;
         let max_width = (bar.right - bar.left) / MAX_BUTTON_SHARE;
         let mut spans = Spans::new();
         for index in 0..elements.Length()? {
-            let Ok(rect) = elements
-                .GetElement(index)
-                .and_then(|e| e.CachedBoundingRectangle())
-            else {
+            let Ok(element) = elements.GetElement(index) else {
+                continue;
+            };
+            if element.CachedProcessId().is_ok_and(|pid| pid == own) {
+                continue;
+            }
+            let Ok(rect) = element.CachedBoundingRectangle() else {
                 continue;
             };
             let width = rect.right - rect.left;

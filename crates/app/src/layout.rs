@@ -24,6 +24,18 @@ pub const BIG_BATTERY_HEIGHT: f32 = 16.0;
 pub const INNER_TEXT_SIZE: f32 = 9.5;
 /// Room for the charging bolt where it cannot sit on the battery bar.
 pub const BOLT_SLOT: f32 = 10.0;
+/// Space kept free above and below the widget in a taskbar lower than that.
+const TASKBAR_INSET: f32 = 5.0;
+/// Below this the widget would become illegible.
+const MIN_FIT: f32 = 0.7;
+
+/// Size factor for the widget inside a taskbar `bar_height` device-independent pixels
+/// high: `1.0` for a standard taskbar (48 on Windows 11, 40 on Windows 10), smaller for compact ones ("small taskbar buttons")
+/// so that the widget keeps some air above and below.
+pub fn taskbar_fit(bar_height: f32) -> f32 {
+    ((bar_height - 2.0 * TASKBAR_INSET) / HEIGHT).clamp(MIN_FIT, 1.0)
+}
+
 /// Name lengths tried in turn when space is tight.
 const NAME_LIMITS: [usize; 3] = [18, 12, 8];
 
@@ -447,6 +459,16 @@ mod tests {
     fn display_names_in_config_are_stable() {
         let text = serde_json::to_string(&Display::ALL.map(|(d, _)| d)).unwrap();
         assert_eq!(text, r#"["full","icon_bar","icon_percent","bar_percent"]"#);
+    }
+
+    #[test]
+    fn compact_taskbars_get_a_smaller_widget() {
+        assert_eq!(taskbar_fit(48.0), 1.0, "Windows 11 standard");
+        assert_eq!(taskbar_fit(40.0), 1.0, "Windows 10 standard");
+        // Windows 11 with small taskbar buttons: 32 px, the widget shrinks to 22 px.
+        assert_eq!(HEIGHT * taskbar_fit(32.0), 22.0);
+        assert!(HEIGHT * taskbar_fit(32.0) <= 32.0 - 2.0 * TASKBAR_INSET);
+        assert_eq!(taskbar_fit(10.0), MIN_FIT, "never illegibly small");
     }
 
     #[test]

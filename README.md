@@ -27,7 +27,8 @@ account, no telemetry.
 - **Taskbar widget**: a borderless, transparent strip with one pill per device (icon,
   battery, percentage). It never takes focus, hides behind full-screen apps and only
   uses the gap the taskbar buttons leave free (extra devices collapse into "+N", weakest
-  batteries stay visible).
+  batteries stay visible). It sizes itself to the taskbar, so it also fits a compact
+  taskbar with small buttons.
 - **Tray icon** that shows the lowest battery level at a glance; every setting lives in
   its context menu.
 - **Many sources, one list**: Bluetooth, Logitech receivers, Logitech G HUB, gaming
@@ -49,14 +50,16 @@ irm https://raw.githubusercontent.com/hitzjano/BatteryWidget/main/install.ps1 | 
 ```
 
 Downloads the newest release, verifies its SHA-256 checksum, installs it to
-`%LOCALAPPDATA%\Programs\BatteryWidget`, adds a Start menu shortcut and starts it.
+`%LOCALAPPDATA%\Programs\BatteryWidget`, adds a Start menu shortcut and starts it. From
+then on it starts with Windows (untick *Start with Windows* in the tray menu to stop that).
 No admin rights needed; run it again to update. See [`install.ps1`](install.ps1).
 
 ### Download
 
 1. Get `BatteryWidget.exe` from the [latest release](https://github.com/hitzjano/BatteryWidget/releases/latest).
 2. Put it anywhere (for example `%LOCALAPPDATA%\Programs\BatteryWidget\`) and run it.
-3. Optional: right-click the tray icon → **Start with Windows**.
+3. It starts with Windows from then on; to turn that off, untick **Start with Windows**
+   in the tray icon's menu.
 
 The executable is not code-signed, so SmartScreen may ask for confirmation on first
 start. A SHA-256 checksum is published with every release.
@@ -101,7 +104,7 @@ Settings in the menu (it stays open while you change them; click outside to clos
 | Show device names | Adds the name to each pill; names are shortened and devices collapse into "+N" if space runs out |
 | Notifications | Battery low, fully charged, low threshold 10 to 30 % |
 | Sources | Switch each device source on or off |
-| Start with Windows | Per-user autostart entry |
+| Start with Windows | Per-user autostart entry, on by default (switched on at the first start) |
 
 Settings are stored in `%LOCALAPPDATA%\BatteryWidget\config.json`; a log is written to
 `app.log` in the same folder (`--verbose` for more detail). `--demo` shows sample

@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The widget no longer vanishes from the taskbar while the Start menu, the notification
+  centre or another flyout is open (Windows 11 lifts the taskbar into a higher z-order
+  band then, which no topmost window can get above, and sometimes leaves it there). In the
+  taskbar positions the widget is now embedded in the taskbar as a child window instead
+  of floating on top of it; it is recreated automatically after Explorer restarts and
+  slides in and out together with an auto-hiding taskbar.
+- The widget no longer stays visible on top of a full-screen window that covers the
+  taskbar but does not have the focus (for example a full-screen Remote Desktop session
+  on the second display while working on the first). Embedded in the taskbar, it is
+  covered together with it.
+- On a compact taskbar ("small taskbar buttons", 32 px instead of 48 px) the widget
+  shrinks to fit instead of filling almost the whole height.
+
+### Changed
+
+- *Start with Windows* is now on by default: the first start switches it on once. Turning
+  it off in the menu is remembered and is not undone by later starts or updates.
+- The taskbar probe ignores the widget's own window, and choosing a new position or
+  display in the menu now closes the menu.
+- `--verbose` logs why the widget is hidden.
+
 ## [0.1.1] - 2026-11-18
 
 ### Security

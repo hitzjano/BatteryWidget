@@ -71,5 +71,5 @@
 
     Write-Host "Installed to $target" -ForegroundColor Green
     Start-Process -FilePath $target
-    Write-Host 'BatteryWidget is running. Right-click the tray icon for settings (e.g. "Start with Windows").'
+    Write-Host 'BatteryWidget is running and starts with Windows. Right-click the tray icon for settings (untick "Start with Windows" to turn that off).'
 }

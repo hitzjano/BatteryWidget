@@ -108,6 +108,9 @@ pub struct Config {
     pub notify_full: bool,
     pub low_threshold: u8,
     pub notification_cooldown_min: u32,
+    /// Set once "Start with Windows" has been switched on by default on the first run, so
+    /// that switching it off later sticks.
+    pub autostart_default_applied: bool,
 }
 
 impl Default for Config {
@@ -127,6 +130,7 @@ impl Default for Config {
             notify_full: false,
             low_threshold: 20,
             notification_cooldown_min: 60,
+            autostart_default_applied: false,
         }
     }
 }
@@ -226,6 +230,14 @@ mod tests {
             Config::parse(r#"{"display":"bar_percent"}"#).display,
             Display::BarPercent
         );
+    }
+
+    #[test]
+    fn autostart_default_is_applied_only_once() {
+        assert!(!Config::default().autostart_default_applied);
+        // Configs written by older versions lack the key: the default is applied once.
+        assert!(!Config::parse(r#"{"show_names":true}"#).autostart_default_applied);
+        assert!(Config::parse(r#"{"autostart_default_applied":true}"#).autostart_default_applied);
     }
 
     #[test]

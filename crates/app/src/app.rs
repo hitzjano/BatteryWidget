@@ -13,7 +13,7 @@ use windows::core::{w, HSTRING, PCSTR, PCWSTR};
 use windows::Win32::Foundation::{
     GetLastError, ERROR_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
-use windows::Win32::Graphics::Gdi::InvalidateRect;
+use windows::Win32::Graphics::Gdi::{InvalidateRect, ScreenToClient};
 use windows::Win32::System::LibraryLoader::{
     GetModuleHandleW, GetProcAddress, LoadLibraryExW, SetDefaultDllDirectories,
     LOAD_LIBRARY_SEARCH_SYSTEM32,
@@ -36,7 +36,10 @@ use crate::taskbar::{self, Monitor, Taskbar};
 use crate::theme;
 use crate::tray::{self, Tray};
 
+/// The invisible main window: tray icon, menu, timers and messages from other threads.
 const CLASS_NAME: PCWSTR = w!("BatteryWidget.Window");
+/// The visible widget. Inside the taskbar it is a child window of the taskbar.
+const WIDGET_CLASS_NAME: PCWSTR = w!("BatteryWidget.Widget");
 const WM_APP_DEVICES: u32 = WM_APP + 1;
 const WM_APP_TRAY: u32 = WM_APP + 2;
 const WM_APP_FOREGROUND: u32 = WM_APP + 3;
@@ -69,6 +72,8 @@ const CMD_THEME: usize = 220;
 const CMD_THRESHOLD: usize = 240;
 const CMD_SOURCE: usize = 260;
 const CMD_MONITOR: usize = 280;
+/// Displays selectable in the menu.
+const MONITOR_SLOTS: usize = 16;
 const CMD_DISPLAY: usize = 300;
 
 const SOURCE_LABELS: [&str; 5] = [
@@ -116,7 +121,12 @@ struct Style {
 }
 
 struct App {
+    /// The invisible main window.
     hwnd: HWND,
+    /// The widget window, created on demand; `None` until then.
+    widget: Option<HWND>,
+    /// The taskbar the widget is embedded in; `None` for a free-floating widget.
+    host: Option<HWND>,
     config: Config,
     config_path: PathBuf,
     /// Latest snapshot from the hub, and the subset shown in the widget.
@@ -133,6 +143,10 @@ struct App {
     /// The content changed and has to be drawn again.
     dirty: bool,
     visible: bool,
+    /// Where the window was last put (parent client coordinates for an embedded widget).
+    placed: POINT,
+    /// Why the widget is hidden, for the log.
+    hidden_reason: Option<&'static str>,
     origin: POINT,
     dragging: bool,
     probe: Arc<Probe>,
@@ -198,6 +212,22 @@ impl App {
         if let Err(error) = self.config.save(&self.config_path) {
             log::warn!("could not save settings: {error}");
         }
+    }
+
+    /// "Start with Windows" is on by default: switch it on once, on the first run, and
+    /// remember that, so a later opt-out in the menu is respected. Skipped in demo mode,
+    /// which is for screenshots and UI work.
+    fn apply_autostart_default(&mut self) {
+        if self.config.autostart_default_applied || self.demo {
+            return;
+        }
+        if !autostart::is_enabled() && !autostart::set_enabled(true) {
+            log::warn!("could not enable start with Windows");
+            return;
+        }
+        log::info!("start with Windows enabled (default)");
+        self.config.autostart_default_applied = true;
+        self.save();
     }
 
     fn start_hub(&mut self) {
@@ -302,11 +332,18 @@ impl App {
         self.tray.update(&pixels, size, &tooltip);
     }
 
-    fn hide(&mut self) {
+    /// Hide the widget; `reason` is logged when it changes, to explain disappearances.
+    fn hide_because(&mut self, reason: &'static str) {
+        if self.hidden_reason != Some(reason) {
+            log::debug!("widget hidden: {reason}");
+            self.hidden_reason = Some(reason);
+        }
         if std::mem::replace(&mut self.visible, false) {
-            // SAFETY: our own window.
-            unsafe {
-                let _ = ShowWindow(self.hwnd, SW_HIDE);
+            if let Some(widget) = self.widget {
+                // SAFETY: our own window (or a stale handle, which merely fails).
+                unsafe {
+                    let _ = ShowWindow(widget, SW_HIDE);
+                }
             }
         }
     }
@@ -347,6 +384,46 @@ impl App {
                     .max_by_key(|(left, right)| right - left)
             })
             .unwrap_or((anchor, anchor))
+    }
+
+    /// Make sure the widget window exists and lives where it should: inside the taskbar
+    /// `host`, or free-floating for `None`. Returns `false` if it cannot be created.
+    ///
+    /// Inside the taskbar the widget is a child window of it. A topmost window on top of
+    /// the taskbar is not enough: Windows 11 lifts the taskbar into a higher z-order band
+    /// whenever the Start menu, a flyout or the notification centre opens (and at times
+    /// leaves it there), and no ordinary window can be placed above that band.
+    /// As a child the widget is drawn together with the taskbar instead.
+    fn ensure_widget(&mut self, host: Option<HWND>) -> bool {
+        // SAFETY: plain window queries; a stale handle makes them fail.
+        let alive = self
+            .widget
+            .is_some_and(|widget| unsafe { IsWindow(Some(widget)) }.as_bool());
+        if alive && self.host == host {
+            return true;
+        }
+        if let Some(old) = self.widget.take() {
+            if alive {
+                // SAFETY: our own window.
+                unsafe {
+                    let _ = DestroyWindow(old);
+                }
+            }
+        }
+        self.visible = false;
+        self.dirty = true;
+        self.placed = POINT {
+            x: i32::MIN,
+            y: i32::MIN,
+        };
+        self.widget = create_widget(host);
+        match (self.widget, host) {
+            (Some(_), Some(_)) => log::debug!("widget embedded in the taskbar"),
+            (Some(_), None) => log::debug!("widget floating"),
+            (None, _) => log::error!("could not create the widget window"),
+        }
+        self.host = host.filter(|_| self.widget.is_some());
+        self.widget.is_some()
     }
 
     /// Top-left corner of the widget for the current settings.
@@ -435,10 +512,14 @@ impl App {
             return;
         }
         let Some(monitor) = taskbar::monitor(self.config.monitor) else {
-            return self.hide();
+            return self.hide_because("no display");
         };
         let bar = taskbar::find(&monitor).filter(Taskbar::is_horizontal);
         let in_taskbar = self.config.position.in_taskbar() && bar.is_some();
+        // Compact taskbars ("small taskbar buttons") get a smaller widget.
+        let fit = bar.as_ref().filter(|_| in_taskbar).map_or(1.0, |b| {
+            layout::taskbar_fit((b.rect.bottom - b.rect.top) as f32 / monitor.scale())
+        });
         // Keep clear of the taskbar buttons: the widget only gets the gap they leave.
         let watched = bar
             .as_ref()
@@ -464,12 +545,14 @@ impl App {
                 }
                 // Not measured yet: showing the widget now could put it on top of
                 // taskbar buttons. The probe reports back within a moment.
-                None if !self.probe.is_unavailable() => return self.hide(),
+                None if !self.probe.is_unavailable() => {
+                    return self.hide_because("taskbar not measured yet")
+                }
                 None => {}
             }
         }
         let style = Style {
-            scale: monitor.scale(),
+            scale: monitor.scale() * fit,
             light: self.light_theme(),
             solid: !in_taskbar,
             max_width,
@@ -496,23 +579,52 @@ impl App {
             };
         }
 
-        let taskbar_hidden = in_taskbar && bar.is_some_and(|b| b.is_hidden(&monitor));
-        let show = self.config.show_widget
-            && !self.layout.pills.is_empty()
-            && !taskbar_hidden
-            && !taskbar::fullscreen_app_on(&monitor, self.hwnd);
-        if !show {
-            return self.hide();
+        let host = bar.as_ref().filter(|_| in_taskbar).map(|b| b.hwnd);
+        // An embedded widget slides away with an auto-hiding taskbar by itself.
+        let taskbar_hidden =
+            in_taskbar && self.host.is_none() && bar.is_some_and(|b| b.is_hidden(&monitor));
+        let hidden_by = if !self.config.show_widget {
+            Some("switched off")
+        } else if self.layout.pills.is_empty() {
+            Some("no devices")
+        } else if taskbar_hidden {
+            Some("taskbar auto-hidden")
+        } else if taskbar::fullscreen_app_on(&monitor, self.hwnd) {
+            Some("full-screen application")
+        } else {
+            None
+        };
+        if let Some(reason) = hidden_by {
+            return self.hide_because(reason);
+        }
+        // Embedding can fail (the taskbar may be restarting); then the widget floats on
+        // top of the taskbar as before until the next pass tries again.
+        if !self.ensure_widget(host) && !self.ensure_widget(None) {
+            return self.hide_because("no window");
+        }
+        let Some(widget) = self.widget else {
+            return;
+        };
+        if self.hidden_reason.take().is_some() {
+            log::debug!("widget shown");
         }
 
         let origin = self.place(&monitor, bar.as_ref());
-        let moved = origin.x != self.origin.x || origin.y != self.origin.y;
         self.origin = origin;
+        let mut target = origin;
+        if let Some(host) = self.host {
+            // SAFETY: valid out-pointer; a stale host handle merely fails.
+            unsafe {
+                let _ = ScreenToClient(host, &mut target);
+            }
+        }
+        let moved = target.x != self.placed.x || target.y != self.placed.y;
         if self.dirty {
             let palette = theme::palette(style.light, style.solid);
             match self.renderer.present(
-                self.hwnd,
-                origin,
+                widget,
+                // A layered child window is moved with SetWindowPos below.
+                self.host.is_none().then_some(origin),
                 &self.layout,
                 &self.shown,
                 &palette,
@@ -522,8 +634,9 @@ impl App {
                 Err(error) => log::error!("drawing failed: {error}"),
             }
         }
-        // SAFETY: our own window. The taskbar is topmost too and raises itself when
-        // clicked, so the widget re-asserts its place on every pass.
+        // SAFETY: our own window. A floating widget competes with other topmost windows
+        // (the taskbar raises itself when clicked); an embedded one stays above the
+        // taskbar's own content. Either way the place is re-asserted on every pass.
         unsafe {
             let mut flags = SWP_NOACTIVATE | SWP_NOSIZE;
             if !moved {
@@ -532,16 +645,14 @@ impl App {
             if !self.visible {
                 flags |= SWP_SHOWWINDOW;
             }
-            let _ = SetWindowPos(
-                self.hwnd,
-                Some(HWND_TOPMOST),
-                origin.x,
-                origin.y,
-                0,
-                0,
-                flags,
-            );
+            let after = if self.host.is_some() {
+                HWND_TOP
+            } else {
+                HWND_TOPMOST
+            };
+            let _ = SetWindowPos(widget, Some(after), target.x, target.y, 0, 0, flags);
         }
+        self.placed = target;
         self.visible = true;
     }
 
@@ -549,13 +660,17 @@ impl App {
     fn end_drag(&mut self) {
         self.dragging = false;
         let mut rect = RECT::default();
+        let Some(widget) = self.widget else {
+            return;
+        };
         // SAFETY: valid out-pointer, our own window.
-        if unsafe { GetWindowRect(self.hwnd, &mut rect) }.is_ok() {
+        if unsafe { GetWindowRect(widget, &mut rect) }.is_ok() {
             (self.config.free_x, self.config.free_y) = (rect.left, rect.top);
             self.origin = POINT {
                 x: rect.left,
                 y: rect.top,
             };
+            self.placed = self.origin;
             self.save();
         }
     }
@@ -748,7 +863,7 @@ impl App {
                         s.game_controllers,
                     ][i]
                 } else {
-                    c.monitor == pick(CMD_MONITOR, 16)?
+                    c.monitor == pick(CMD_MONITOR, MONITOR_SLOTS)?
                 }
             }
         })
@@ -783,6 +898,8 @@ impl App {
                 if !autostart::set_enabled(!autostart::is_enabled()) {
                     log::warn!("could not change the autostart entry");
                 }
+                // An explicit choice replaces the default.
+                self.config.autostart_default_applied = true;
             }
             CMD_REFRESH => {
                 if let Some(hub) = &self.hub {
@@ -835,7 +952,7 @@ impl App {
                 *flag = !*flag;
                 restart_hub = true;
             }
-            _ if (CMD_MONITOR..CMD_MONITOR + 16).contains(&id) => {
+            _ if (CMD_MONITOR..CMD_MONITOR + MONITOR_SLOTS).contains(&id) => {
                 self.config.monitor = id - CMD_MONITOR
             }
             _ => return false,
@@ -854,6 +971,14 @@ impl App {
 /// Apply a setting chosen in the open menu without closing it. Returns `false` if `id`
 /// is not a setting (the menu then handles the click as usual and closes).
 fn apply_in_open_menu(id: usize) -> bool {
+    // Moving the widget may recreate its window (into or out of the taskbar); with the
+    // menu still open that leaves the menu unable to close. Such a choice closes the
+    // menu like any ordinary command and is applied afterwards.
+    let moves_widget = (CMD_POSITION..CMD_POSITION + Position::ALL.len()).contains(&id)
+        || (CMD_MONITOR..CMD_MONITOR + MONITOR_SLOTS).contains(&id);
+    if moves_widget {
+        return false;
+    }
     let applied = with_app(|app| {
         if app.checked(id).is_none() {
             return false;
@@ -929,7 +1054,7 @@ unsafe extern "system" fn menu_filter(code: i32, wparam: WPARAM, lparam: LPARAM)
 fn show_menu(hwnd: HWND) {
     // The menu runs its own message loop, during which other handlers need the state;
     // it is therefore only borrowed to build the menu and to execute the result.
-    let Some(Some(menu)) = with_app(|app| app.build_menu()) else {
+    let Some((Some(menu), widget)) = with_app(|app| (app.build_menu(), app.widget)) else {
         return;
     };
     let mut cursor = POINT::default();
@@ -944,13 +1069,15 @@ fn show_menu(hwnd: HWND) {
         // Opened on the widget, the menu goes above it instead of covering it, so the
         // effect of a setting is visible while the menu stays open.
         let mut flags = TPM_RETURNCMD | TPM_RIGHTBUTTON;
-        let mut widget = RECT::default();
-        let on_widget = IsWindowVisible(hwnd).as_bool()
-            && GetWindowRect(hwnd, &mut widget).is_ok()
-            && (widget.left..widget.right).contains(&cursor.x)
-            && (widget.top..widget.bottom).contains(&cursor.y);
-        if on_widget && widget.top > GetSystemMetrics(SM_CYSCREEN) / 2 {
-            cursor.y = widget.top - 4;
+        let mut area = RECT::default();
+        let on_widget = widget.is_some_and(|widget| {
+            IsWindowVisible(widget).as_bool()
+                && GetWindowRect(widget, &mut area).is_ok()
+                && (area.left..area.right).contains(&cursor.x)
+                && (area.top..area.bottom).contains(&cursor.y)
+        });
+        if on_widget && area.top > GetSystemMetrics(SM_CYSCREEN) / 2 {
+            cursor.y = area.top - 4;
             flags |= TPM_BOTTOMALIGN;
         }
         let chosen = TrackPopupMenu(menu, flags, cursor.x, cursor.y, None, hwnd, None);
@@ -990,13 +1117,14 @@ unsafe extern "system" fn window_proc(
             with_app(App::refresh);
         }
         WM_APP_TRAY => match (lparam.0 as u32) & 0xFFFF {
-            WM_CONTEXTMENU => show_menu(hwnd),
+            WM_CONTEXTMENU => show_menu(main_window()),
             NIN_SELECT | NIN_KEYSELECT => {
                 with_app(|app| app.command(CMD_TOGGLE_WIDGET));
             }
             _ => {}
         },
-        WM_RBUTTONUP | WM_NCRBUTTONUP => show_menu(hwnd),
+        // On the widget; the menu belongs to the main window.
+        WM_RBUTTONUP | WM_NCRBUTTONUP => show_menu(main_window()),
         // In free mode the whole widget is a drag handle.
         WM_NCHITTEST => {
             let free = with_app(|app| app.config.position == Position::Free).unwrap_or(false);
@@ -1047,7 +1175,9 @@ unsafe extern "system" fn window_proc(
                 let _ = DestroyWindow(hwnd);
             }
         }
-        WM_DESTROY => {
+        // The widget is destroyed when it moves in or out of the taskbar, and together
+        // with the taskbar when Explorer restarts; only the main window ends the program.
+        WM_DESTROY if hwnd == main_window() => {
             // SAFETY: ends the message loop of this thread.
             unsafe { PostQuitMessage(0) };
         }
@@ -1064,6 +1194,47 @@ unsafe extern "system" fn window_proc(
         _ => return unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
     }
     LRESULT(0)
+}
+
+fn main_window() -> HWND {
+    HWND(MAIN_WINDOW.load(Ordering::Relaxed) as *mut c_void)
+}
+
+/// Create the widget window: a child of the taskbar `host`, or a free-floating
+/// topmost window for `None`.
+fn create_widget(host: Option<HWND>) -> Option<HWND> {
+    // SAFETY: the class was registered at start-up; the host handle may be stale, in
+    // which case creation fails.
+    unsafe {
+        let module = GetModuleHandleW(None).ok()?;
+        // Layered: per-pixel alpha. Tool window: no taskbar button, not in Alt+Tab.
+        // No-activate: clicking the widget never steals focus from a game or editor.
+        let (ex_style, style) = match host {
+            Some(_) => (
+                WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_NOPARENTNOTIFY,
+                WS_CHILD | WS_CLIPSIBLINGS,
+            ),
+            None => (
+                WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+                WS_POPUP,
+            ),
+        };
+        CreateWindowExW(
+            ex_style,
+            WIDGET_CLASS_NAME,
+            w!("BatteryWidget"),
+            style,
+            0,
+            0,
+            0,
+            0,
+            host,
+            None,
+            Some(module.into()),
+            None,
+        )
+        .ok()
+    }
 }
 
 /// Foreground changes are when full-screen applications appear and when the taskbar
@@ -1154,14 +1325,17 @@ pub fn run() {
             lpszClassName: CLASS_NAME,
             ..Default::default()
         };
-        if RegisterClassExW(&class) == 0 {
-            log::error!("could not register the window class");
+        let widget_class = WNDCLASSEXW {
+            lpszClassName: WIDGET_CLASS_NAME,
+            ..class
+        };
+        if RegisterClassExW(&class) == 0 || RegisterClassExW(&widget_class) == 0 {
+            log::error!("could not register the window classes");
             return;
         }
-        // Layered: per-pixel alpha. Tool window: no taskbar button, not in Alt+Tab.
-        // No-activate: clicking the widget never steals focus from a game or editor.
+        // Never shown; it owns the tray icon and the menu and outlives the widget.
         let created = CreateWindowExW(
-            WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+            WS_EX_TOOLWINDOW,
             CLASS_NAME,
             w!("BatteryWidget"),
             WS_POPUP,
@@ -1194,6 +1368,8 @@ pub fn run() {
         let config_path = data_dir.join("config.json");
         let mut app = App {
             hwnd,
+            widget: None,
+            host: None,
             config: Config::load(&config_path),
             config_path,
             devices: Vec::new(),
@@ -1208,12 +1384,15 @@ pub fn run() {
             layout: Layout::default(),
             dirty: true,
             visible: false,
+            hidden_reason: None,
+            placed: POINT::default(),
             origin: POINT::default(),
             dragging: false,
             slot: None,
             probe: Probe::start(hwnd.0 as isize, WM_APP_FOREGROUND),
             demo: arguments.iter().any(|a| a == "--demo"),
         };
+        app.apply_autostart_default();
         app.tray.add();
         app.update_tray();
         app.start_hub();
@@ -1240,6 +1419,10 @@ pub fn run() {
         MAIN_WINDOW.store(0, Ordering::Relaxed);
         // Dropping the state stops the workers and removes the tray icon.
         if let Some(app) = APP.with(|cell| cell.borrow_mut().take()) {
+            if let Some(widget) = app.widget {
+                // Do not leave a dead window inside the taskbar.
+                let _ = DestroyWindow(widget);
+            }
             app.probe.stop();
             app.save();
         }
