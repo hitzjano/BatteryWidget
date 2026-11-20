@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Updating with `install.ps1` while BatteryWidget is running no longer fails now and
+  then with "file is being used by another process": the installer waits until Windows
+  has released the old executable.
+
 ## [0.1.3] - 2026-11-20
 
 ### Fixed

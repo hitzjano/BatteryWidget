@@ -55,7 +55,17 @@
         }
 
         New-Item -ItemType Directory -Path $installDir -Force | Out-Null
-        Copy-Item $tmpExe $target -Force
+        # Windows (or a virus scanner) can keep the old file locked for a moment after
+        # the process has exited, so retry for a few seconds before giving up.
+        for ($attempt = 1; ; $attempt++) {
+            try {
+                Copy-Item $tmpExe $target -Force
+                break
+            } catch [System.IO.IOException] {
+                if ($attempt -ge 40) { throw }
+                Start-Sleep -Milliseconds 250
+            }
+        }
     } finally {
         Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
     }
