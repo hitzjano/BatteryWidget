@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "battery-widget"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "battery-widget-core",
  "log",
@@ -17,7 +17,7 @@ dependencies = [
 
 [[package]]
 name = "battery-widget-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "log",
  "serde",

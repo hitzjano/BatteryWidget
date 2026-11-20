@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-20
+
+### Fixed
+
+- A `config.json` that starts with a UTF-8 byte order mark (as written by some Windows
+  editors) is read normally instead of being rejected, which used to reset all settings.
+
 ## [0.1.2] - 2026-11-20
 
 ### Fixed
@@ -79,7 +86,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Low-battery and fully-charged notifications with hysteresis and cool-down.
 - Optional start with Windows (per-user `Run` key).
 
-[Unreleased]: https://github.com/hitzjano/BatteryWidget/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/hitzjano/BatteryWidget/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/hitzjano/BatteryWidget/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/hitzjano/BatteryWidget/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/hitzjano/BatteryWidget/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/hitzjano/BatteryWidget/releases/tag/v0.1.0

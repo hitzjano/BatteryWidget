@@ -146,6 +146,9 @@ impl Config {
     }
 
     pub fn parse(text: &str) -> Config {
+        // Some Windows editors (older Notepad, PowerShell 5) start UTF-8 files with a
+        // byte order mark, which is not valid JSON.
+        let text = text.strip_prefix('\u{feff}').unwrap_or(text);
         serde_json::from_str::<Config>(text)
             .map(Config::sanitized)
             .unwrap_or_else(|error| {
@@ -238,6 +241,12 @@ mod tests {
         // Configs written by older versions lack the key: the default is applied once.
         assert!(!Config::parse(r#"{"show_names":true}"#).autostart_default_applied);
         assert!(Config::parse(r#"{"autostart_default_applied":true}"#).autostart_default_applied);
+    }
+
+    #[test]
+    fn byte_order_mark_is_ignored() {
+        let config = Config::parse("\u{feff}{\"show_names\":true}");
+        assert!(config.show_names);
     }
 
     #[test]
