@@ -17,7 +17,7 @@ account, no telemetry.
 
 *Screenshots show the built-in sample devices (`--demo`).*
 
-> **Project status: 0.1.1, early.** The application itself is tested on Windows 11 and
+> **Project status: 0.1.2, early.** The application itself is tested on Windows 11 and
 > the protocol logic is covered by unit tests, but the device protocols have not yet
 > been verified on real hardware. See
 > [Supported devices](#supported-devices) and please [report](CONTRIBUTING.md) what works.
