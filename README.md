@@ -37,7 +37,8 @@ account, no telemetry.
   their last level, dimmed.
 - **Notifications** for low battery and (optionally) full charge.
 - **Windows 11 native**: per-monitor DPI aware, follows dark/light theme, multi-monitor.
-- **Light**: under 1 MB on disk, event driven, draws only when something changes.
+- **Light**: a single executable of about 0.9 MB, around 17 MB of memory, event driven,
+  draws only when something changes.
 - **Private**: no network access except the optional G HUB socket on `127.0.0.1`.
   Devices are only ever *asked* for their battery level, never configured.
 
@@ -93,7 +94,7 @@ as a device with a known level is found, the widget appears in the taskbar.
 | Right-click the tray icon or the widget | Device list and settings |
 | *Position* → *Free*, then drag the widget | Place it anywhere |
 
-Settings in the menu (it stays open while you change them; click outside to close):
+Settings in the menu:
 
 | Setting | Options |
 | --- | --- |
@@ -111,8 +112,9 @@ Settings are stored in `%LOCALAPPDATA%\BatteryWidget\config.json`; a log is writ
 devices instead of scanning, which is handy for screenshots and UI work. A few values exist only in
 the file, for example `offset_x` to nudge the widget sideways inside the taskbar.
 
-To uninstall, switch off *Start with Windows*, exit, and delete the executable and the
-settings folder.
+To uninstall, switch off *Start with Windows*, exit, and delete the executable, the
+settings folder `%LOCALAPPDATA%\BatteryWidget` and, if you used the installer, the Start
+menu shortcut (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\BatteryWidget.lnk`).
 
 ## Supported devices
 
@@ -157,7 +159,10 @@ crates/app    battery-widget: tray icon, Direct2D widget window, settings
 
 Each source runs on its own thread and sends complete readings through a channel. An
 aggregator merges them and hands the UI an immutable snapshot, only when something
-changed. The UI thread owns a single layered window and never blocks on a device.
+changed. The UI thread never blocks on a device. It owns an invisible main window for the
+tray icon and the menu, and the widget itself: a layered window that is embedded in the
+taskbar in the taskbar positions (so it stays visible while Windows raises the taskbar
+for the Start menu and flyouts) and floats as a topmost window otherwise.
 
 ## Development
 
