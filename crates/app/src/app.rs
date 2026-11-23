@@ -204,6 +204,15 @@ fn demo_devices() -> Vec<Device> {
             false,
         ),
         device("G502", Kind::Mouse, Link::Lightspeed, Some(70), false, true),
+        // Charging, but the device cannot measure its level right now: only the bolt.
+        device(
+            "PRO X 2",
+            Kind::Headset,
+            Link::Lightspeed,
+            None,
+            true,
+            false,
+        ),
     ]
 }
 
@@ -321,7 +330,7 @@ impl App {
         );
         let mut tooltip = APP_NAME.to_string();
         for device in &self.shown {
-            let line = format!("\n{}: {}", device.name, layout::percent_label(device));
+            let line = format!("\n{}: {}", device.name, layout::tooltip_label(device));
             // The shell limits tooltips to 127 characters.
             if tooltip.encode_utf16().count() + line.encode_utf16().count() > 120 {
                 tooltip.push_str("\n…");

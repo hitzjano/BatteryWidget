@@ -81,6 +81,8 @@ pub struct MergeState {
     /// Last connected snapshot of Logitech devices, with the time it was taken.
     memory: HashMap<String, (Device, f64)>,
     charge: ChargeEstimator,
+    /// Last real (non-zero) level of every listed device.
+    levels: HashMap<String, u8>,
 }
 
 fn device_from(r: &Reading, name: String, bt_enabled: bool) -> Device {
@@ -99,9 +101,27 @@ fn device_from(r: &Reading, name: String, bt_enabled: bool) -> Device {
     }
 }
 
+/// Should the level of a second report replace the current one? A live value beats a
+/// stale one (from a device that is offline or asleep), and any real value beats 0 %,
+/// which sources report while a device cannot measure.
+fn prefer_level(
+    current: Option<u8>,
+    current_live: bool,
+    other: Option<u8>,
+    other_live: bool,
+) -> bool {
+    match (current, other) {
+        (_, None) | (_, Some(0)) => false,
+        (None, Some(_)) | (Some(0), Some(_)) => true,
+        (Some(_), Some(_)) => other_live && !current_live,
+    }
+}
+
 /// Fill gaps of `target` with what a second source knows about the same device.
 fn fill_from(target: &mut Device, other: &Reading) {
-    if target.battery.is_none() {
+    let target_live = target.connected && !target.idle;
+    let other_live = other.connected && !other.idle;
+    if prefer_level(target.battery, target_live, other.battery, other_live) {
         target.battery = other.battery;
     }
     if other.connected && !target.connected {
@@ -226,7 +246,7 @@ pub fn build_device_list(src: &Sources, state: &mut MergeState, now: f64) -> Vec
                     d.full = false;
                 }
             }
-            if d.battery.is_none() && connected {
+            if connected && prefer_level(d.battery, false, r.battery, false) {
                 d.battery = r.battery;
             }
             continue;
@@ -257,7 +277,12 @@ pub fn build_device_list(src: &Sources, state: &mut MergeState, now: f64) -> Vec
         } else {
             (slot.clone(), dev)
         };
-        if winner.battery.is_none() {
+        if prefer_level(
+            winner.battery,
+            winner.connected && !winner.idle,
+            loser.battery,
+            loser.connected && !loser.idle,
+        ) {
             winner.battery = loser.battery;
         }
         winner.charging |= loser.charging && winner.connected;
@@ -270,6 +295,28 @@ pub fn build_device_list(src: &Sources, state: &mut MergeState, now: f64) -> Vec
         }
         *slot = winner;
     }
+
+    // 6. A connected device that cannot measure right now keeps its last real level
+    //    instead of showing 0 %. While it is charging the level is unknown instead (the UI
+    //    then shows only the charging bolt): an old value would not move for the whole
+    //    charge and look as if charging did nothing.
+    for dev in &mut merged {
+        match dev.battery {
+            Some(level) if level > 0 => {
+                state.levels.insert(dev.id.clone(), level);
+            }
+            _ if dev.charging => dev.battery = None,
+            _ if dev.connected => {
+                if let Some(level) = state.levels.get(&dev.id) {
+                    dev.battery = Some(*level);
+                }
+            }
+            _ => {}
+        }
+    }
+    state
+        .levels
+        .retain(|id, _| merged.iter().any(|d| d.id == *id));
 
     merged.sort_by(|a, b| {
         (!a.is_active(), a.kind, a.name.to_lowercase()).cmp(&(
@@ -416,6 +463,84 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert!(out[0].idle);
         assert!(build_device_list(&src, &mut state, 700.0).is_empty());
+    }
+
+    #[test]
+    fn zero_from_first_source_does_not_hide_real_level() {
+        let mut src = sources();
+        src.ghub = vec![reading(
+            "logi:AAAA0001",
+            "G502 LIGHTSPEED",
+            Kind::Mouse,
+            Link::Lightspeed,
+            Some(0),
+        )
+        .charging(true)];
+        src.hidpp = vec![reading(
+            "logi:AAAA0001",
+            "G502 LIGHTSPEED",
+            Kind::Mouse,
+            Link::Lightspeed,
+            Some(85),
+        )
+        .charging(true)];
+        let out = build_device_list(&src, &mut MergeState::default(), 0.0);
+        assert_eq!((out[0].battery, out[0].charging), (Some(85), true));
+    }
+
+    #[test]
+    fn live_level_beats_stale_one_of_offline_endpoint() {
+        let mut src = sources();
+        // Mouse moved from its receiver to the charging cable: the receiver still lists it
+        // as offline with an old level, the USB endpoint reports the current one.
+        src.hidpp = vec![
+            reading("logi:1", "G502", Kind::Mouse, Link::Lightspeed, Some(40)).connected(false),
+            reading("logi:1", "G502", Kind::Mouse, Link::Usb, Some(55)).charging(true),
+        ];
+        let out = build_device_list(&src, &mut MergeState::default(), 0.0);
+        assert_eq!(out.len(), 1);
+        assert_eq!((out[0].battery, out[0].charging), (Some(55), true));
+        assert!(out[0].connected);
+    }
+
+    #[test]
+    fn unknown_level_while_charging_shows_no_stale_value() {
+        let mut state = MergeState::default();
+        let mut src = sources();
+        src.vendor = vec![reading(
+            "razer:1",
+            "Razer Viper",
+            Kind::Mouse,
+            Link::Rf24,
+            Some(62),
+        )];
+        build_device_list(&src, &mut state, 0.0);
+        for level in [None, Some(0)] {
+            src.vendor = vec![
+                reading("razer:1", "Razer Viper", Kind::Mouse, Link::Rf24, level).charging(true),
+            ];
+            let out = build_device_list(&src, &mut state, 10.0);
+            assert_eq!((out[0].battery, out[0].charging), (None, true));
+        }
+        // Not charging and unable to measure: the last real level stays.
+        src.vendor = vec![reading(
+            "razer:1",
+            "Razer Viper",
+            Kind::Mouse,
+            Link::Rf24,
+            None,
+        )];
+        assert_eq!(
+            build_device_list(&src, &mut state, 15.0)[0].battery,
+            Some(62)
+        );
+        src.vendor = vec![
+            reading("razer:1", "Razer Viper", Kind::Mouse, Link::Rf24, Some(64)).charging(true),
+        ];
+        assert_eq!(
+            build_device_list(&src, &mut state, 20.0)[0].battery,
+            Some(64)
+        );
     }
 
     #[test]

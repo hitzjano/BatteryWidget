@@ -465,7 +465,7 @@ impl Painter<'_> {
                     x += self.s(layout::BIG_BATTERY_WIDTH + layout::BATTERY_NUB);
                 }
             }
-            if device.charging && self.display.bolt_beside() {
+            if self.display.needs_bolt_beside(device, &pill.label) {
                 let slot = self.s(layout::BOLT_SLOT);
                 self.bolt(
                     x + slot / 2.0 + self.s(1.0),
@@ -529,7 +529,7 @@ impl Painter<'_> {
                 self.target
                     .FillRoundedRectangle(&rounded(bar, corner - self.s(1.5)), self.brush);
             }
-            match inner {
+            match inner.filter(|label| !label.is_empty()) {
                 Some(label) => {
                     let tint = theme::with_alpha(self.palette.text, dim);
                     self.text(label, &self.inner, x, width, tint);

@@ -117,8 +117,10 @@ fn read(group: &[HidInfo], product: &str) -> Vec<crate::model::Reading> {
             // A wireless Razer device only charges while it is on its cable.
             let link = if charging { Link::Usb } else { Link::Rf24 };
             let id = format!("razer:{:04x}:{}", info.pid, super::instance_of(info));
+            // At the start of charging the level reads 0: unknown, not empty.
+            let level = (raw > 0).then(|| percent(raw));
             return vec![Reading::new(id, name, kind, link)
-                .battery(Some(percent(raw)))
+                .battery(level)
                 .charging(charging)];
         }
     }

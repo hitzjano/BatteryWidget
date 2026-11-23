@@ -114,7 +114,9 @@ pub fn match_rap_reply(report: &[u8], device: u8, sub_id: u8, register: u8) -> R
 /// Decoded battery state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Battery {
-    pub percent: u8,
+    /// `None` when the device cannot measure right now. Many devices send a level of `0`
+    /// while charging; that means "unknown", not "empty".
+    pub percent: Option<u8>,
     pub charging: bool,
     pub full: bool,
 }
@@ -166,44 +168,47 @@ pub fn decode_battery(feature: u16, data: &[u8]) -> Option<Battery> {
     if data.len() < 3 {
         return None;
     }
-    let done = |percent: u8, charging: bool, full: bool| {
+    let done = |percent: Option<u8>, charging: bool, full: bool| {
+        let percent = percent.map(|p| p.min(100));
         Some(Battery {
             percent,
             charging,
-            full: full && percent >= 98,
+            full: full && percent.is_some_and(|p| p >= 98),
         })
     };
+    let known = |percent: u8| Some(percent).filter(|p| *p > 0);
     match feature {
         FEATURE_UNIFIED_BATTERY => {
-            let (mut soc, level, status) = (data[0], data[1], data[2]);
-            if soc == 0 {
-                // Devices without a fuel gauge only report a coarse level bit.
-                soc = match level {
-                    l if l & 8 != 0 => 100,
-                    l if l & 4 != 0 => 60,
-                    l if l & 2 != 0 => 20,
-                    l if l & 1 != 0 => 5,
-                    _ => 0,
-                };
-            }
-            done(soc.min(100), matches!(status, 1 | 2), status == 3)
+            let (soc, level, status) = (data[0], data[1], data[2]);
+            // Devices without a fuel gauge only report a coarse level bit.
+            let percent = known(soc).or(match level {
+                l if l & 8 != 0 => Some(100),
+                l if l & 4 != 0 => Some(60),
+                l if l & 2 != 0 => Some(20),
+                l if l & 1 != 0 => Some(5),
+                _ => None,
+            });
+            done(percent, matches!(status, 1 | 2), status == 3)
         }
-        FEATURE_BATTERY_STATUS => {
-            done(data[0].min(100), matches!(data[2], 1 | 2 | 4), data[2] == 3)
-        }
-        FEATURE_CENTURION_SOC => done(data[0].min(100), matches!(data[2], 1 | 2), data[2] == 3),
+        FEATURE_BATTERY_STATUS => done(known(data[0]), matches!(data[2], 1 | 2 | 4), data[2] == 3),
+        FEATURE_CENTURION_SOC => done(known(data[0]), matches!(data[2], 1 | 2), data[2] == 3),
         FEATURE_ADC_MEASUREMENT => {
+            let flags = data[2];
+            let charging = flags & 0x02 != 0;
+            // Bit 0 says whether the measurement is valid at all.
             let value = u16::from_be_bytes([data[0], data[1]]);
-            let percent = if value <= 100 {
-                value as u8
+            let percent = if flags & 0x01 == 0 || value == 0 {
+                None
+            } else if value <= 100 {
+                Some(value as u8)
             } else {
-                voltage_to_percent(value)
+                Some(voltage_to_percent(value))
             };
-            let charging = data[2] & 0x02 != 0;
-            done(percent, charging, charging)
+            done(percent, charging, false)
         }
         FEATURE_BATTERY_VOLTAGE => {
-            let percent = voltage_to_percent(u16::from_be_bytes([data[0], data[1]]));
+            let millivolts = u16::from_be_bytes([data[0], data[1]]);
+            let percent = (millivolts > 0).then(|| voltage_to_percent(millivolts));
             let external_power = data[2] & 0x80 != 0;
             let state = data[2] & 0x03;
             done(
@@ -221,7 +226,7 @@ pub fn decode_rap_mileage(data: &[u8]) -> Option<Battery> {
     let percent = *data.first().filter(|p| **p <= 100)?;
     let state = data.get(2)? & 0xF0;
     Some(Battery {
-        percent,
+        percent: Some(percent).filter(|p| *p > 0 || state != 0x50),
         charging: state == 0x50,
         full: state == 0x90 && percent >= 98,
     })
@@ -238,7 +243,7 @@ pub fn decode_rap_status(data: &[u8]) -> Option<Battery> {
         0 => return None,
     };
     Some(Battery {
-        percent,
+        percent: Some(percent),
         charging: state & 0x21 == 0x21,
         full: false,
     })
@@ -412,7 +417,7 @@ mod tests {
         assert_eq!(
             b,
             Battery {
-                percent: 73,
+                percent: Some(73),
                 charging: false,
                 full: false
             }
@@ -421,7 +426,7 @@ mod tests {
         assert_eq!(
             b,
             Battery {
-                percent: 20,
+                percent: Some(20),
                 charging: true,
                 full: false
             }
@@ -431,20 +436,47 @@ mod tests {
         let b = decode_battery(FEATURE_UNIFIED_BATTERY, &[90, 8, 3]).unwrap();
         assert!(!b.full, "'full' below 98 % is not trusted");
         assert!(decode_battery(FEATURE_UNIFIED_BATTERY, &[1, 2]).is_none());
+        let b = decode_battery(FEATURE_UNIFIED_BATTERY, &[0, 0, 1]).unwrap();
+        assert_eq!(
+            (b.percent, b.charging),
+            (None, true),
+            "no level while charging is unknown, not 0 %"
+        );
     }
 
     #[test]
     fn other_battery_features() {
         let b = decode_battery(FEATURE_BATTERY_STATUS, &[45, 30, 4]).unwrap();
-        assert_eq!((b.percent, b.charging), (45, true));
+        assert_eq!((b.percent, b.charging), (Some(45), true));
+        let b = decode_battery(FEATURE_BATTERY_STATUS, &[0, 0, 1]).unwrap();
+        assert_eq!(
+            (b.percent, b.charging),
+            (None, true),
+            "level 0 while recharging means unknown"
+        );
+        let b = decode_battery(FEATURE_CENTURION_SOC, &[0, 0, 1]).unwrap();
+        assert_eq!((b.percent, b.charging), (None, true));
         let b = decode_battery(FEATURE_BATTERY_VOLTAGE, &[0x0F, 0x58, 0x80]).unwrap();
-        assert_eq!((b.percent, b.charging), (voltage_to_percent(3928), true));
+        assert_eq!(
+            (b.percent, b.charging),
+            (Some(voltage_to_percent(3928)), true)
+        );
+        let b = decode_battery(FEATURE_BATTERY_VOLTAGE, &[0, 0, 0x80]).unwrap();
+        assert_eq!((b.percent, b.charging), (None, true));
         let b = decode_battery(FEATURE_BATTERY_VOLTAGE, &[0x10, 0x68, 0x81]).unwrap();
         assert!(b.full && !b.charging);
-        let b = decode_battery(FEATURE_ADC_MEASUREMENT, &[0x00, 0x40, 0x00]).unwrap();
-        assert_eq!(b.percent, 64);
+        let b = decode_battery(FEATURE_ADC_MEASUREMENT, &[0x00, 0x40, 0x01]).unwrap();
+        assert_eq!(b.percent, Some(64));
+        let b = decode_battery(FEATURE_ADC_MEASUREMENT, &[0x0E, 0xE3, 0x03]).unwrap();
+        assert_eq!((b.percent, b.charging), (Some(50), true));
         let b = decode_battery(FEATURE_ADC_MEASUREMENT, &[0x0E, 0xE3, 0x02]).unwrap();
-        assert_eq!((b.percent, b.charging), (50, true));
+        assert_eq!(
+            (b.percent, b.charging),
+            (None, true),
+            "measurement without the valid bit is ignored"
+        );
+        let b = decode_battery(FEATURE_ADC_MEASUREMENT, &[0x00, 0x00, 0x03]).unwrap();
+        assert_eq!(b.percent, None);
     }
 
     #[test]
@@ -452,15 +484,16 @@ mod tests {
         assert_eq!(
             decode_rap_mileage(&[55, 0, 0x30]),
             Some(Battery {
-                percent: 55,
+                percent: Some(55),
                 charging: false,
                 full: false
             })
         );
         assert!(decode_rap_mileage(&[80, 0, 0x50]).unwrap().charging);
+        assert_eq!(decode_rap_mileage(&[0, 0, 0x50]).unwrap().percent, None);
         assert!(decode_rap_mileage(&[100, 0, 0x90]).unwrap().full);
         assert!(decode_rap_mileage(&[200, 0, 0]).is_none());
-        assert_eq!(decode_rap_status(&[7, 0]).unwrap().percent, 90);
+        assert_eq!(decode_rap_status(&[7, 0]).unwrap().percent, Some(90));
         assert!(decode_rap_status(&[3, 0x25]).unwrap().charging);
         assert!(decode_rap_status(&[0, 0]).is_none());
     }

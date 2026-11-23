@@ -115,8 +115,12 @@ impl<C: Channel> Scanner<C> {
         }
         let key = (path.to_string(), report[1]);
         if report[2] == 0x41 {
-            // Device connection notification: forget what we knew about that slot.
-            self.slots.remove(&key);
+            // Device connection notification (e.g. the charging cable was plugged in):
+            // identify the device again, but keep its last level until it reports a new one.
+            if let Some(slot) = self.slots.get_mut(&key) {
+                slot.feature = None;
+                slot.identified = false;
+            }
             return true;
         }
         self.slots
@@ -232,7 +236,7 @@ impl<C: Channel> Scanner<C> {
         }
 
         let Some(battery) = battery else {
-            if !slot.identified {
+            if !slot.identified && slot.last_battery.is_none() {
                 // Empty slot, or a device we never learned anything about.
                 self.slots.remove(&key);
                 return Ok(None);
@@ -248,7 +252,17 @@ impl<C: Channel> Scanner<C> {
             return Ok(Some(offline));
         };
 
-        slot.last_battery = Some(battery.percent);
+        // While charging many devices cannot measure. Then the level is shown as unknown
+        // (just the charging bolt): an old value would look as if charging did nothing.
+        // Without charging, an unknown level keeps the last real one.
+        if battery.percent.is_some() {
+            slot.last_battery = battery.percent;
+        }
+        let level = if battery.charging {
+            battery.percent
+        } else {
+            slot.last_battery
+        };
         Ok(Some(
             Reading::new(
                 format!("logi:{}", slot.unit_id),
@@ -256,7 +270,7 @@ impl<C: Channel> Scanner<C> {
                 slot.kind,
                 link,
             )
-            .battery(Some(battery.percent))
+            .battery(level)
             .charging(battery.charging)
             .full(battery.full),
         ))
@@ -448,6 +462,8 @@ mod tests {
     struct FakeReceiver {
         pid: u16,
         mouse_online: bool,
+        /// Payload of the mouse's unified battery reply.
+        mouse_battery: Vec<u8>,
         requests: usize,
     }
 
@@ -487,7 +503,7 @@ mod tests {
                         .collect(),
                     (2, 2) => vec![3],
                     (3, 0) => vec![1, 0xDE, 0xAD, 0xBE, 0xEF, 0, 0],
-                    (6, 1) => vec![85, 8, 1],
+                    (6, 1) => self.mouse_battery.clone(),
                     other => panic!("unexpected request {other:?}"),
                 })),
                 2 => Err(ChannelError::Protocol(ERR_INVALID_SUBID)),
@@ -527,6 +543,7 @@ mod tests {
             FakeReceiver {
                 pid,
                 mouse_online: true,
+                mouse_battery: vec![85, 8, 1],
                 requests: 0,
             },
         );
@@ -606,6 +623,41 @@ mod tests {
             scanner.is_relevant_notification("path", &[0x10, 1, 0x41, 0, 0, 0, 0]),
             "connection change"
         );
-        assert!(!scanner.slots.contains_key(&("path".to_string(), 1)));
+        let slot = &scanner.slots[&("path".to_string(), 1)];
+        assert!(
+            !slot.identified && slot.feature.is_none(),
+            "slot is identified again"
+        );
+        assert_eq!(slot.last_battery, Some(85), "but keeps its last level");
+    }
+
+    #[test]
+    fn unknown_level_while_charging_is_shown_as_unknown() {
+        let mut scanner = scanner(0xC548);
+        scanner.scan();
+        // Charging cable plugged in: the device reconnects and cannot measure for a while.
+        assert!(scanner.is_relevant_notification("path", &[0x10, 1, 0x41, 0, 0, 0, 0]));
+        scanner.channels.get_mut("path").unwrap().mouse_battery = vec![0, 0, 1];
+        let found = scanner.scan();
+        let mouse = found.iter().find(|r| r.id == "logi:DEADBEEF").unwrap();
+        assert_eq!(mouse.battery, None, "neither 0 % nor the stale level");
+        assert!(mouse.charging && mouse.connected);
+        // Charging stopped but the level is still unknown: fall back to the last one.
+        scanner.channels.get_mut("path").unwrap().mouse_battery = vec![0, 0, 0];
+        let found = scanner.scan();
+        let mouse = found.iter().find(|r| r.id == "logi:DEADBEEF").unwrap();
+        assert_eq!((mouse.battery, mouse.charging), (Some(85), false));
+    }
+
+    #[test]
+    fn device_asleep_after_reconnect_notification_stays_listed() {
+        let mut scanner = scanner(0xC548);
+        scanner.scan();
+        scanner.is_relevant_notification("path", &[0x10, 1, 0x41, 0x40, 0, 0, 0]);
+        scanner.channels.get_mut("path").unwrap().mouse_online = false;
+        let found = scanner.scan();
+        let mouse = found.iter().find(|r| r.id == "logi:DEADBEEF").unwrap();
+        assert!(!mouse.connected);
+        assert_eq!(mouse.battery, Some(85));
     }
 }

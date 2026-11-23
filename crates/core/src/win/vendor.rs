@@ -4,14 +4,19 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use super::hid::{enumerate, product_string};
+use super::hid::{enumerate, interface_paths, product_string};
 use super::xbox::Xbox;
-use crate::hid::HidInfo;
+use crate::hid::{vid_pid_from_path, HidInfo};
 use crate::model::{Kind, Reading};
 use crate::vendor::{driver_for, is_known_vendor};
 use crate::wake::Wake;
 
 const SCAN_INTERVAL: Duration = Duration::from_secs(60);
+/// While a device is connected its level and charging state are read this often.
+const ACTIVE_INTERVAL: Duration = Duration::from_secs(20);
+/// How often the list of HID interfaces is checked for new or removed devices (plugging
+/// in a charging cable often makes a device appear under a second, wired product id).
+const WATCH_INTERVAL: Duration = Duration::from_secs(3);
 /// A device that ignores its driver's query is not asked again for this long …
 const BACKOFF: Duration = Duration::from_secs(600);
 /// … unless staying silent is normal for it (asleep, headset switched off).
@@ -101,12 +106,29 @@ impl VendorScanner {
     }
 }
 
-/// Worker loop: scan at start, every minute, on request and when a controller (dis)connects.
+/// Paths of all HID interfaces of supported vendors. Cheap: no device is opened.
+fn vendor_paths() -> Vec<String> {
+    let mut paths: Vec<String> = interface_paths()
+        .into_iter()
+        .filter(|path| vid_pid_from_path(path).is_some_and(|(vid, _)| is_known_vendor(vid)))
+        .collect();
+    paths.sort();
+    paths
+}
+
+/// Worker loop: scan at start, every 20 s while a device is connected (every minute
+/// otherwise), on request, when a controller (dis)connects and when a HID device of a
+/// supported vendor appears or disappears.
 pub fn run(wake: Arc<Wake>, vendor_hid: bool, controllers: bool, emit: impl Fn(Vec<Reading>)) {
     super::init_winrt_thread();
     let mut scanner = VendorScanner::default();
     let mut xbox = Xbox::default();
     while !wake.is_stopped() {
+        let known = if vendor_hid {
+            vendor_paths()
+        } else {
+            Vec::new()
+        };
         let mut readings = if vendor_hid {
             scanner.scan()
         } else {
@@ -115,7 +137,24 @@ pub fn run(wake: Arc<Wake>, vendor_hid: bool, controllers: bool, emit: impl Fn(V
         if controllers {
             readings.extend(xbox.read(&wake));
         }
+        let active = readings.iter().any(|r| r.connected && !r.idle);
         emit(readings);
-        wake.sleep(SCAN_INTERVAL);
+
+        let deadline = Instant::now()
+            + if active {
+                ACTIVE_INTERVAL
+            } else {
+                SCAN_INTERVAL
+            };
+        while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+            if wake.sleep(remaining.min(WATCH_INTERVAL)) {
+                break;
+            }
+            if vendor_hid && vendor_paths() != known {
+                // Give the new interface a moment to finish enumerating.
+                wake.sleep(Duration::from_millis(500));
+                break;
+            }
+        }
     }
 }

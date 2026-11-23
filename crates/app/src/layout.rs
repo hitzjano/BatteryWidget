@@ -70,6 +70,12 @@ impl Display {
     pub fn bolt_beside(self) -> bool {
         matches!(self, Display::IconPercent | Display::BarPercent)
     }
+
+    /// Does this pill need the charging bolt next to the battery? With an unknown level
+    /// the big battery has no text inside, so the bolt goes in there instead.
+    pub fn needs_bolt_beside(self, device: &Device, label: &str) -> bool {
+        device.charging && self.bolt_beside() && !(self == Display::BarPercent && label.is_empty())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -98,6 +104,25 @@ pub fn percent_label(device: &Device) -> String {
     device
         .battery
         .map_or_else(|| "–".to_string(), |level| format!("{level}%"))
+}
+
+/// Text next to (or inside) the battery in the widget. While charging with an unknown
+/// level it is empty, so only the charging bolt is shown.
+pub fn pill_label(device: &Device) -> String {
+    if device.charging && device.battery.is_none() {
+        String::new()
+    } else {
+        percent_label(device)
+    }
+}
+
+/// Level for the tooltip: like [`percent_label`], but says "charging" instead of a dash.
+pub fn tooltip_label(device: &Device) -> String {
+    if device.charging && device.battery.is_none() {
+        "charging".to_string()
+    } else {
+        percent_label(device)
+    }
 }
 
 pub fn ellipsize(name: &str, max_chars: usize) -> String {
@@ -139,7 +164,7 @@ fn build(
     let mut pills: Vec<Pill> = Vec::new();
     let mut cursor = 0.0;
     for (index, device) in selected.iter().filter_map(|i| Some((*i, devices.get(*i)?))) {
-        let label = percent_label(device);
+        let label = pill_label(device);
         let label_width = measure(&label).ceil();
         let name = names.map(|limit| ellipsize(&device.name, limit));
         let name_width = name.as_deref().map_or(0.0, |n| measure(n).ceil());
@@ -148,12 +173,13 @@ fn build(
             width += name_width + s(ITEM_GAP);
         }
         width += match display {
+            Display::Full if label.is_empty() => s(BATTERY_WIDTH + BATTERY_NUB),
             Display::Full => s(BATTERY_WIDTH + BATTERY_NUB) + s(ITEM_GAP) + label_width,
             Display::IconBar => s(BATTERY_WIDTH + BATTERY_NUB),
             Display::IconPercent => label_width,
             Display::BarPercent => s(BIG_BATTERY_WIDTH + BATTERY_NUB),
         };
-        if device.charging && display.bolt_beside() {
+        if display.needs_bolt_beside(device, &label) {
             width += s(BOLT_SLOT);
         }
         let width = width.ceil();
@@ -291,6 +317,12 @@ mod tests {
     fn labels() {
         assert_eq!(percent_label(&device("a", Some(85))), "85%");
         assert_eq!(percent_label(&device("a", None)), "–");
+        let mut charging = device("a", None);
+        charging.charging = true;
+        assert_eq!(pill_label(&charging), "", "only the bolt");
+        assert_eq!(tooltip_label(&charging), "charging");
+        charging.battery = Some(40);
+        assert_eq!(pill_label(&charging), "40%");
         assert_eq!(ellipsize("MX Master 3S", 18), "MX Master 3S");
         assert_eq!(ellipsize("MX Master 3S", 8), "MX Mast…");
         assert_eq!(
@@ -452,6 +484,19 @@ mod tests {
         assert_eq!(
             width(&devices, Display::BarPercent),
             14.0 + ICON_BOX + ITEM_GAP + BIG_BATTERY_WIDTH + BATTERY_NUB + BOLT_SLOT
+        );
+        // Charging with an unknown level: only the bolt, no percentage and no dash.
+        let bar_only = width(&devices, Display::IconBar);
+        devices[0].battery = None;
+        assert_eq!(width(&devices, Display::Full), bar_only, "no label, no gap");
+        assert_eq!(
+            width(&devices, Display::IconPercent),
+            14.0 + ICON_BOX + ITEM_GAP + BOLT_SLOT
+        );
+        assert_eq!(
+            width(&devices, Display::BarPercent),
+            14.0 + ICON_BOX + ITEM_GAP + BIG_BATTERY_WIDTH + BATTERY_NUB,
+            "the bolt sits inside the empty battery"
         );
     }
 

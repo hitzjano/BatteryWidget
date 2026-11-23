@@ -37,7 +37,8 @@ struct Info {
 }
 
 struct Level {
-    percent: u8,
+    /// `None` when G HUB reports 0 %, which it does while a device cannot measure.
+    percent: Option<u8>,
     charging: bool,
     full: bool,
 }
@@ -96,9 +97,9 @@ impl Session {
             else {
                 return (Vec::new(), false);
             };
-            let percent = percent.clamp(0.0, 100.0) as u8;
+            let percent = crate::model::clamp_percent(percent);
             let level = Level {
-                percent,
+                percent: (percent > 0).then_some(percent),
                 charging: payload["charging"].as_bool().unwrap_or(false),
                 full: payload["fullyCharged"].as_bool().unwrap_or(false) && percent >= 98,
             };
@@ -115,7 +116,7 @@ impl Session {
             .map(|d| {
                 let level = self.battery.get(&d.id);
                 Reading::new(format!("logi:{}", d.unit), d.name.clone(), d.kind, d.link)
-                    .battery(level.map(|l| l.percent))
+                    .battery(level.and_then(|l| l.percent))
                     .charging(level.is_some_and(|l| l.charging))
                     .full(level.is_some_and(|l| l.full))
                     .connected(d.connected)
@@ -332,6 +333,15 @@ mod tests {
         let r = s.readings();
         assert_eq!(r[0].battery, Some(100));
         assert!(r[0].full);
+    }
+
+    #[test]
+    fn zero_percent_is_unknown() {
+        let mut s = Session::default();
+        s.handle(LIST);
+        s.handle(r#"{"path":"/battery/dev00000001/state","payload":{"deviceId":"dev00000001","percentage":0,"charging":true}}"#);
+        let r = s.readings();
+        assert_eq!((r[0].battery, r[0].charging), (None, true));
     }
 
     #[test]

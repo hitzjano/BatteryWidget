@@ -7,11 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-11-23
+
 ### Fixed
 
 - Updating with `install.ps1` while BatteryWidget is running no longer fails now and
   then with "file is being used by another process": the installer waits until Windows
   has released the old executable.
+- A device that is charging no longer shows 0 %. Many devices cannot measure their level
+  for a while after the charging cable is plugged in and report 0 then; this is now
+  treated as "unknown" for Logitech (HID++ and G HUB) and Razer devices, and Logitech
+  headsets no longer show readings that the headset itself marks as invalid.
+- A 0 % or outdated level from one source no longer hides the correct level that a
+  second source reports for the same device (e.g. G HUB and direct HID++, or a mouse that
+  moved from its receiver to the charging cable).
+- A Logitech device that reconnects (as many do when the charging cable is plugged in)
+  keeps its level instead of dropping it until the next successful reading.
+- Charging is shown sooner for Razer, SteelSeries, Corsair, HyperX and PlayStation
+  devices: a connected device is read every 20 seconds instead of every minute, and a
+  newly attached or removed device (such as a mouse switching to its cable) is picked up
+  within a few seconds.
+
+### Changed
+
+- While a device is charging and cannot report its level, the widget shows only the
+  charging bolt instead of a percentage, so an old value does not look as if charging
+  had no effect. In *Icon and battery with percentage inside* the bolt sits inside the
+  empty battery; the tooltip says "charging". Once the device reports a level again, it
+  is shown as usual. Without charging, a briefly unknown level keeps the last real one.
+- `--demo` includes a charging device with an unknown level.
 
 ## [0.1.3] - 2026-11-20
 
@@ -92,7 +116,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Low-battery and fully-charged notifications with hysteresis and cool-down.
 - Optional start with Windows (per-user `Run` key).
 
-[Unreleased]: https://github.com/hitzjano/BatteryWidget/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/hitzjano/BatteryWidget/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/hitzjano/BatteryWidget/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/hitzjano/BatteryWidget/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/hitzjano/BatteryWidget/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/hitzjano/BatteryWidget/compare/v0.1.0...v0.1.1
