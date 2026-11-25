@@ -100,12 +100,41 @@ input is treated as untrusted: types are checked and levels clamped to 0–100.
 | HyperX Cloud II | `06 FF BB 02` / `…03` | byte 7 percent / byte 4 = 1 charging |
 | HyperX Cloud Alpha, Cloud III | `21 BB 0B` / `0C` / `03` | byte 3: percent / charging / link state |
 | HyperX Pulsefire Dart | `51` | `51 00 00 03 <percent> <charging>` |
+| HyperX Cloud II (Kingston) | `06 00 02 00 9A 00 00 68 4A 8E 0A 00 00 00 BB <cmd>` | `0B 00 BB <cmd>`; cmd 2: byte 7 percent, cmd 3: byte 4 = 1 charging |
+| HyperX Cloud Flight | `21 FF 05` | bytes 3–4 battery mV (big endian); above 4107 mV charging, else HeadsetControl's discharge curve |
+| HyperX Cloud Alpha 2 | `52 01` / `50 02` on usage page `0xFF13` | `53 01 <connected>` / `51 02 <percent> <1 = charging>` |
+| Corsair Wireless v2 receivers | `00 02 09 02 0F` on interface 4 | `01 <src> 02 00 <value u16 LE>`, value in ‰ (1–1000) |
 | SteelSeries Arctis 7 | `06 18` | byte 2 percent |
 | SteelSeries Arctis 1 | `06 12` | byte 3 percent, byte 2 = 1 means off |
-| SteelSeries Arctis Nova 7 | `00 B0` | byte 2 level 0–4, byte 3: 0 off, 1 charging |
+| SteelSeries Arctis Nova 7 / 7X / 7P, Arctis 7+ | `00 B0` | byte 2 level (0–4 on older, percent on newer product ids), byte 3: 0 off, 1/2 charging (7+: byte 1 = 1 off) |
+| SteelSeries Arctis Nova 3P / 5 | `00 B0` | byte 3 percent, byte 1 = 2 off, byte 4 = 1 charging |
+| SteelSeries Arctis Nova Pro Wireless | `06 B0` on interface 4 | byte 6 level 0–8, byte 15: 1 off, 2 charging |
+| SteelSeries Arctis 9 | `00 20` on interface 0 | byte 3 level `0x64`–`0x9A`, byte 4: `0xFF` off, 1 charging |
+| SteelSeries Aerox / Prime Wireless | `00 92` (cable), `00 D2` (dongle) on interface 3 | byte 1: bit 7 charging, `(raw − 1) × 5` percent |
+| SteelSeries Rival 3 Wireless, Rival 650 | `00 AA 01` | byte 0 percent, byte 2 ≠ 0 charging |
+| ASUS ROG / TUF keyboards | `00 12 01` (Omni: `02 12 01` on `mi_02&col02`) | `12 01` echoed; byte 5 after the report id percent (Falchion: byte 10), byte 8 = 1 charging |
+| ASUS ROG headsets | `CC 12 07` / `CC 12 08` on usage page `0xFF00` | byte 6 percent (Cetra SpeedNova: lower of bytes 6 and 7) / byte 5 = 1 charging |
+| ASUS ROG / TUF mice | `00 12 07` output report on the model's interface (mostly `mi_00`); `03 12 07` on `mi_02&col03` (Omni receiver, Harpe II Ace dongle) | `12 07` echoed; byte 4 after the header pair level (percent; 0–4 quarters on Keris Wireless / EVA, Chakram, Pugio II, Gladius II, Strix Impact II Wireless; Strix Carry: quarters at byte 6), byte 9 charging; level 0 and not charging = mouse asleep; `FF AA` = error |
+| ASUS ROG Omni receiver pairing | `01 A0 00 00` on `mi_02&col01` | from byte 5: 4-byte slots, product id little endian, 0 ends the list; first supported mouse and keyboard are queried |
+| JBL Quantum 810 / 910P | Get Feature report `0x49` on interface 5 | `49 <percent>`; echoed id checked, 0 = headset off; no charging state |
+| JBL Quantum 950 | Feature report `88 00 DD 01 00 01 00 02 00 <code>` on interface 5, usage page `0xFF12` | input `86 00 DD …`, bytes 11–12 code, byte 15 value; code `35 00` link (`0x80` connected), `0D 00` level |
 
 A device that does not answer is not asked again for 10 minutes (2 minutes for devices
 that are expected to sleep), so a misbehaving device cannot be flooded.
+
+## JBL speakers over Bluetooth LE
+
+The speakers of the `AA` frame generation (product ids in `jbl_ble.rs`: Charge 3/4/5/6, Flip 4/5/6/7, Xtreme 2/3/4, Pulse 3/4/5, Boombox/2/3, Go 4 (incl. Duo), Clip 5, Tuner 3) expose a vendor GATT service
+`65786365-6c70-6f69-6e74-2e636f6d0000` (notify `…0001`, write `…0002`). Only while
+such a speaker is paired and connected: find its LE address by an advertisement with
+company id `0x0057` and the product id little endian at the start of the manufacturer
+data (6 s active scan, only while the address is unknown), connect, enable
+notifications, write `AA 11 00` (speaker info), collect the `AA 12 <len> 00 <token> …`
+burst for up to 3 s, disconnect. Token `0x44`: low 7 bits percent, bit 7 charging.
+Every 5 minutes, at most one speaker per round. A failure forgets the (rotating) address
+and waits 10, 20, 40, then 60 minutes. Not covered: Wi-Fi and classic-only models, and
+the `DD 00` generation (Boombox 4, Xtreme 5, Go 5, Grip, Essential 3 SE), for which no
+battery query is documented.
 
 ## Merging
 

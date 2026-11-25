@@ -1,5 +1,6 @@
-//! HyperX: Cloud II Wireless, Cloud Stinger 2 Wireless, Cloud Alpha Wireless,
-//! Cloud III Wireless and the Pulsefire Dart mouse.
+//! HyperX: Cloud II Wireless (HP and Kingston), Cloud Stinger 2 Wireless, Cloud Flight,
+//! Cloud Alpha Wireless, Cloud Alpha 2 Wireless, Cloud III Wireless and the Pulsefire
+//! Dart mouse. Headset layouts as documented by the HeadsetControl project.
 
 use super::Driver;
 use crate::hid::HidInfo;
@@ -8,10 +9,15 @@ use crate::hid::HidInfo;
 pub const VID_HP: u16 = 0x03F0;
 pub const VID_KINGSTON: u16 = 0x0951;
 
-const CLOUD2_PIDS: [u16; 4] = [0x018B, 0x0696, 0x0D93, 0x1718];
+const CLOUD2_PIDS: [u16; 3] = [0x018B, 0x0696, 0x0D93];
 const CLOUD_STINGER2: u16 = 0x0D93;
 const ALPHA_PIDS: [u16; 4] = [0x0286, 0x098D, 0x1743, 0x1765];
 const CLOUD3_PIDS: [u16; 2] = [0x04A8, 0x0974];
+/// Cloud Alpha 2 Wireless base station.
+const ALPHA2: u16 = 0x08BE;
+/// Kingston-era headsets.
+const FLIGHT_PIDS: [u16; 2] = [0x16C4, 0x1723];
+const CLOUD2_KINGSTON: u16 = 0x1718;
 /// Pulsefire Dart: wireless dongle and wired mode.
 const DART_DONGLE: u16 = 0x16E1;
 const DART_WIRED: u16 = 0x16E2;
@@ -20,6 +26,7 @@ const DART_WIRED: u16 = 0x16E2;
 enum Family {
     Cloud2,
     Alpha,
+    Alpha2,
 }
 
 fn family(group: &[HidInfo]) -> Option<Family> {
@@ -28,6 +35,8 @@ fn family(group: &[HidInfo]) -> Option<Family> {
         Some(Family::Cloud2)
     } else if ALPHA_PIDS.contains(&first.pid) || CLOUD3_PIDS.contains(&first.pid) {
         Some(Family::Alpha)
+    } else if first.pid == ALPHA2 {
+        Some(Family::Alpha2)
     } else {
         None
     }
@@ -50,6 +59,21 @@ pub const DRIVER: Driver = Driver {
     matches: is_headset,
     #[cfg(windows)]
     read: read_headset,
+};
+
+fn is_kingston_headset(group: &[HidInfo]) -> bool {
+    group.first().is_some_and(|i| {
+        i.vid == VID_KINGSTON && (FLIGHT_PIDS.contains(&i.pid) || i.pid == CLOUD2_KINGSTON)
+    })
+}
+
+pub const KINGSTON_HEADSET: Driver = Driver {
+    name: "HyperX Kingston headset",
+    vendor_ids: &[VID_KINGSTON],
+    silence_is_normal: true,
+    matches: is_kingston_headset,
+    #[cfg(windows)]
+    read: read_kingston_headset,
 };
 
 pub const PULSEFIRE: Driver = Driver {
@@ -77,6 +101,57 @@ pub fn alpha_request(command: u8) -> [u8; 3] {
 
 pub fn is_alpha_reply(reply: &[u8]) -> bool {
     reply.len() >= 4 && reply[0] == 0x21
+}
+
+/// Cloud Alpha 2 Wireless: `[command, sub]`, answered by `[command + 1, sub, …]`.
+pub const ALPHA2_LINK: [u8; 2] = [0x52, 0x01];
+pub const ALPHA2_BATTERY: [u8; 2] = [0x50, 0x02];
+
+pub fn is_alpha2_reply(reply: &[u8], request: [u8; 2]) -> bool {
+    reply.len() >= 4 && reply[0] == request[0] + 1 && reply[1] == request[1]
+}
+
+/// `(percent, charging)` from the Alpha 2 battery reply.
+pub fn parse_alpha2(reply: &[u8]) -> Option<(u8, bool)> {
+    (is_alpha2_reply(reply, ALPHA2_BATTERY) && reply[2] <= 100)
+        .then(|| (reply[2], reply[3] == 0x01))
+}
+
+/// Cloud Flight battery query.
+pub const FLIGHT_REQUEST: [u8; 3] = [0x21, 0xFF, 0x05];
+/// Above this voltage (mV) the Cloud Flight is on its charger.
+const FLIGHT_CHARGING_MV: u16 = 0x100B;
+
+/// Battery voltage (mV, big endian at bytes 3–4) of a Cloud Flight reply, if plausible.
+pub fn flight_voltage(reply: &[u8]) -> Option<u16> {
+    let mv = u16::from_be_bytes([*reply.get(3)?, *reply.get(4)?]);
+    (3000..=4600).contains(&mv).then_some(mv)
+}
+
+/// HeadsetControl's discharge curve of the Cloud Flight.
+pub fn flight_percent(mv: u16) -> u8 {
+    let v = f64::from(mv);
+    let percent = if mv <= 3648 {
+        0.00125 * v
+    } else if mv > 3975 {
+        100.0
+    } else {
+        2.547505e-8 * v.powi(4) - 3.900299e-4 * v.powi(3) + 2.238321 * v.powi(2) - 5706.256 * v
+            + 5452299.0
+    };
+    crate::model::clamp_percent(percent)
+}
+
+/// Kingston Cloud II Wireless: fixed prefix, then the command.
+pub fn cloud2_kingston_request(command: u8) -> [u8; 17] {
+    [
+        0x06, 0x00, 0x02, 0x00, 0x9A, 0x00, 0x00, 0x68, 0x4A, 0x8E, 0x0A, 0x00, 0x00, 0x00, 0xBB,
+        command, 0x00,
+    ]
+}
+
+pub fn is_cloud2_kingston_reply(reply: &[u8], command: u8) -> bool {
+    reply.len() >= 8 && reply[..4] == [0x0B, 0x00, 0xBB, command]
 }
 
 /// Pulsefire Dart heartbeat: `51`, answered with `51 00 00 03 <level> <charging>`.
@@ -172,6 +247,98 @@ fn read_headset(group: &[HidInfo], _product: &str) -> Vec<crate::model::Reading>
                 return vec![new(info, name).battery(level).charging(charging)];
             }
         }
+        Family::Alpha2 => {
+            let writers = group
+                .iter()
+                .filter(|i| i.usage_page == 0xFF13 && i.usage == 0xFF00 && i.output_len >= 2);
+            for info in writers {
+                let Some(mut session) = Session::open(group, info) else {
+                    continue;
+                };
+                let mut ask = |request: [u8; 2]| {
+                    session.ask(&request, Via::Output, Duration::from_millis(1000), |r| {
+                        is_alpha2_reply(r, request)
+                    })
+                };
+                let Some(link) = ask(ALPHA2_LINK) else {
+                    continue;
+                };
+                if link[2] == 0x00 {
+                    return Vec::new(); // headset not connected to its base
+                }
+                let Some((level, charging)) = ask(ALPHA2_BATTERY).and_then(|r| parse_alpha2(&r))
+                else {
+                    return Vec::new();
+                };
+                return vec![new(info, "HyperX Cloud Alpha 2 Wireless")
+                    .battery(Some(level))
+                    .charging(charging && level < 100)
+                    .full(charging && level >= 100)];
+            }
+        }
+    }
+    Vec::new()
+}
+
+#[cfg(windows)]
+fn read_kingston_headset(group: &[HidInfo], _product: &str) -> Vec<crate::model::Reading> {
+    use crate::model::{Kind, Link, Reading};
+    use crate::win::hid::{Session, Via};
+    use std::time::Duration;
+
+    let Some(pid) = group.first().map(|i| i.pid) else {
+        return Vec::new();
+    };
+    let writers = group
+        .iter()
+        .filter(|i| matches!(i.interface, 0 | -1) && i.output_len >= 3);
+    for info in writers {
+        let Some(mut session) = Session::open(group, info) else {
+            continue;
+        };
+        let id = format!("hyperx:{:04x}:{}", info.pid, super::instance_of(info));
+        if pid == CLOUD2_KINGSTON {
+            if info.output_len < 17 {
+                continue;
+            }
+            let mut ask = |command: u8| {
+                session.ask(
+                    &cloud2_kingston_request(command),
+                    Via::Output,
+                    Duration::from_millis(1000),
+                    |r| is_cloud2_kingston_reply(r, command),
+                )
+            };
+            let Some(level) = ask(2) else { continue };
+            let charging = ask(3).is_some_and(|r| r[4] == 1);
+            if !(1..=100).contains(&level[7]) {
+                return Vec::new();
+            }
+            return vec![
+                Reading::new(id, "HyperX Cloud II Wireless", Kind::Headset, Link::Rf24)
+                    .battery(Some(level[7]))
+                    .charging(charging),
+            ];
+        }
+        let Some(mv) = session
+            .ask(
+                &FLIGHT_REQUEST,
+                Via::Output,
+                Duration::from_millis(2000),
+                |r| flight_voltage(r).is_some(),
+            )
+            .and_then(|r| flight_voltage(&r))
+        else {
+            continue;
+        };
+        // On the charger the voltage says nothing about the level.
+        let charging = mv > FLIGHT_CHARGING_MV;
+        let level = (!charging).then(|| flight_percent(mv));
+        return vec![
+            Reading::new(id, "HyperX Cloud Flight", Kind::Headset, Link::Rf24)
+                .battery(level)
+                .charging(charging),
+        ];
     }
     Vec::new()
 }
@@ -263,6 +430,54 @@ mod tests {
         assert!(!is_cloud2_reply(&[0x06, 0xFF, 0xBB, 0x03, 0, 0, 0, 80], 2));
         assert_eq!(alpha_request(0x0B), [0x21, 0xBB, 0x0B]);
         assert!(is_alpha_reply(&[0x21, 0xBB, 0x0B, 64]));
+    }
+
+    #[test]
+    fn newer_headsets() {
+        assert!(is_kingston_headset(&[collection(
+            VID_KINGSTON,
+            0x16C4,
+            0xFF00,
+            1,
+            0,
+            (32, 20, 0)
+        )]));
+        assert!(!is_headset(&[collection(
+            VID_HP,
+            0x1718,
+            0xFF00,
+            1,
+            0,
+            (64, 64, 0)
+        )]));
+        assert!(is_headset(&[collection(
+            VID_HP,
+            0x08BE,
+            0xFF13,
+            0xFF00,
+            2,
+            (64, 64, 0)
+        )]));
+        assert_eq!(parse_alpha2(&[0x51, 0x02, 77, 0x01]), Some((77, true)));
+        assert_eq!(parse_alpha2(&[0x51, 0x02, 140, 0x00]), None);
+        assert_eq!(parse_alpha2(&[0x53, 0x01, 1, 0]), None, "link reply");
+        assert!(is_alpha2_reply(&[0x53, 0x01, 1, 0], ALPHA2_LINK));
+        assert_eq!(cloud2_kingston_request(2)[14..16], [0xBB, 0x02]);
+        assert!(is_cloud2_kingston_reply(
+            &[0x0B, 0, 0xBB, 2, 0, 0, 0, 80],
+            2
+        ));
+    }
+
+    #[test]
+    fn cloud_flight_curve() {
+        assert_eq!(flight_voltage(&[0, 0, 0, 0x0F, 0x3C]), Some(3900));
+        assert_eq!(flight_voltage(&[0, 0, 0, 0x00, 0x10]), None);
+        assert_eq!(flight_percent(4000), 100);
+        assert_eq!(flight_percent(3000), 4);
+        let mid = flight_percent(3800);
+        assert!((20..=90).contains(&mid), "{mid}");
+        assert!(flight_percent(3700) <= flight_percent(3900));
     }
 
     #[test]

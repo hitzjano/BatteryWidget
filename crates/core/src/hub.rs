@@ -156,10 +156,16 @@ impl Hub {
                     crate::win::hidpp::run(wake, |r| drop(tx.send(Some(Update::Hidpp(r)))));
                 });
             }
-            if options.vendor || options.xbox {
+            if options.vendor || options.xbox || options.bluetooth {
                 let tx = tx.clone();
                 hub.spawn("vendor", move |wake| {
-                    crate::win::vendor::run(wake, options.vendor, options.xbox, |r| {
+                    let sources = crate::win::vendor::Enabled {
+                        vendor_hid: options.vendor,
+                        controllers: options.xbox,
+                        // Speakers read over Bluetooth LE belong to the Bluetooth switch.
+                        le_speakers: options.bluetooth,
+                    };
+                    crate::win::vendor::run(wake, sources, |r| {
                         drop(tx.send(Some(Update::Vendor(r))))
                     });
                 });

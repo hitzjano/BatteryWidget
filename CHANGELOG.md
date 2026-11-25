@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-11-25
+
+### Added
+
+- ASUS ROG and TUF wireless mice, keyboards (Azoth, Falchion, Strix Scope, Claymore II)
+  and headsets (Delta II, Pelta, Cetra SpeedNova) on their dongle, cable or the ROG Omni
+  receiver, using the protocol implemented by G-Helper.
+- SteelSeries: Arctis 7+, Arctis 9, Arctis Nova 3P / 5 / 7X / 7P, Nova Pro Wireless and
+  the newer Nova 7 firmware; Aerox 3 / 5 / 9 Wireless, Prime Wireless, Rival 3 Wireless
+  and Rival 650 Wireless mice.
+- HyperX Cloud Flight, Cloud Alpha 2 Wireless and the Kingston Cloud II Wireless.
+- Corsair Void Wireless v2, Virtuoso MAX Wireless and HS80 MAX Wireless receivers.
+- JBL Quantum 810, 910P and 950 Wireless headsets on their USB dongle.
+- JBL portable speakers (Charge 3/4/5/6, Flip 4/5/6/7, Xtreme 2/3/4, Pulse 3/4/5,
+  Boombox/2/3, Go 4 incl. Duo, Clip 5, Tuner 3) over their Bluetooth LE control service,
+  which Windows itself does not read (no battery under *Bluetooth & devices*).
+
+### Fixed
+
+- The Kingston-branded HyperX Cloud II Wireless (product id `0x1718`) was listed under
+  the HP vendor id and therefore never queried; it now uses its own protocol.
+
 ## [0.1.4] - 2026-11-23
 
 ### Fixed
@@ -116,7 +138,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Low-battery and fully-charged notifications with hysteresis and cool-down.
 - Optional start with Windows (per-user `Run` key).
 
-[Unreleased]: https://github.com/hitzjano/BatteryWidget/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/hitzjano/BatteryWidget/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/hitzjano/BatteryWidget/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/hitzjano/BatteryWidget/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/hitzjano/BatteryWidget/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/hitzjano/BatteryWidget/compare/v0.1.1...v0.1.2

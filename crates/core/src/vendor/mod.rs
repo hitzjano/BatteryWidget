@@ -8,8 +8,10 @@ use crate::hid::HidInfo;
 #[cfg(windows)]
 use crate::model::Reading;
 
+pub mod asus;
 pub mod corsair;
 pub mod hyperx;
+pub mod jbl;
 pub mod playstation;
 pub mod razer;
 pub mod steelseries;
@@ -28,14 +30,18 @@ pub struct Driver {
     pub read: fn(&[HidInfo], &str) -> Vec<Reading>,
 }
 
-pub static DRIVERS: [Driver; 7] = [
+pub static DRIVERS: [Driver; 11] = [
     corsair::HEADSET,
+    corsair::V2W,
     corsair::BRAGI,
     razer::DRIVER,
     steelseries::DRIVER,
     hyperx::DRIVER,
     hyperx::PULSEFIRE,
+    hyperx::KINGSTON_HEADSET,
     playstation::DRIVER,
+    asus::DRIVER,
+    jbl::DRIVER,
 ];
 
 /// Is any driver interested in devices of this vendor?
@@ -101,6 +107,12 @@ mod tests {
 
         let unknown_sony = [collection(0x054C, 0x1234, 1, 5, 0, (64, 0, 0))];
         assert!(driver_for(&unknown_sony).is_none());
+        let keris = [collection(0x0B05, 0x1960, 0xFF01, 1, 0, (65, 65, 0))];
+        assert_eq!(driver_for(&keris).unwrap().name, "ASUS ROG");
+
+        let quantum = [collection(0x0ECB, 0x2127, 0xFF12, 1, 5, (64, 0, 64))];
+        assert_eq!(driver_for(&quantum).unwrap().name, "JBL Quantum");
+
         assert!(driver_for(&[]).is_none());
         assert!(is_known_vendor(0x1038) && !is_known_vendor(0x046D));
     }

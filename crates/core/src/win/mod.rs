@@ -3,6 +3,7 @@
 pub mod bluetooth;
 pub mod hid;
 pub mod hidpp;
+pub mod jbl_ble;
 pub mod vendor;
 pub mod xbox;
 

@@ -12,6 +12,7 @@ pub mod ghub;
 pub mod hid;
 pub mod hidpp;
 pub mod hub;
+pub mod jbl_ble;
 pub mod merge;
 pub mod model;
 pub mod names;

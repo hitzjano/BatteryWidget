@@ -336,6 +336,8 @@ const BRANDS: &[&str] = &[
     "8bitdo ",
     "sony ",
     "asus ",
+    "rog ",
+    "jbl ",
     "glorious ",
     "roccat ",
     "keychron ",

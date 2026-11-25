@@ -1,4 +1,5 @@
-//! Corsair: Void / HS / Virtuoso headsets and Slipstream ("Bragi") mice and keyboards.
+//! Corsair: Void / HS / Virtuoso headsets, the newer "Wireless v2" headset receivers and
+//! Slipstream ("Bragi") mice and keyboards.
 
 use super::Driver;
 use crate::hid::HidInfo;
@@ -36,8 +37,27 @@ fn is_headset(group: &[HidInfo]) -> bool {
         .is_some_and(|i| i.vid == VID_CORSAIR && HEADSET_PIDS.contains(&i.pid))
 }
 
+/// Wireless v2 headset receivers (layout as documented by HeadsetControl).
+const V2W_MODELS: [(u16, &str); 3] = [
+    (0x2A08, "Corsair Void Wireless v2"),
+    (0x2A02, "Corsair Virtuoso MAX Wireless"),
+    (0x0A97, "Corsair HS80 MAX Wireless"),
+];
+const V2W_INTERFACE: i32 = 4;
+
+fn v2w_name(pid: u16) -> Option<&'static str> {
+    V2W_MODELS.iter().find(|(p, _)| *p == pid).map(|(_, n)| *n)
+}
+
+fn is_v2w(group: &[HidInfo]) -> bool {
+    group
+        .first()
+        .is_some_and(|i| i.vid == VID_CORSAIR && v2w_name(i.pid).is_some())
+}
+
 fn is_bragi(group: &[HidInfo]) -> bool {
     !is_headset(group)
+        && !is_v2w(group)
         && group
             .iter()
             .any(|i| i.vid == VID_CORSAIR && i.usage_page == BRAGI_USAGE_PAGE)
@@ -51,6 +71,30 @@ pub const HEADSET: Driver = Driver {
     #[cfg(windows)]
     read: read_headset,
 };
+
+pub const V2W: Driver = Driver {
+    name: "Corsair Wireless v2 headset",
+    vendor_ids: &[VID_CORSAIR],
+    silence_is_normal: true,
+    matches: is_v2w,
+    #[cfg(windows)]
+    read: read_v2w,
+};
+
+/// "Get property 0x0F (battery)" of the headset behind the receiver.
+pub const V2W_BATTERY_REQUEST: [u8; 5] = [0x00, 0x02, 0x09, 0x02, 0x0F];
+
+/// Level from a Wireless v2 reply `01 <source> 02 <status 00> <value u16 LE>` (tenths of a
+/// percent). `None` for other replies, errors and out-of-range values.
+pub fn parse_v2w(reply: &[u8]) -> Option<u8> {
+    if reply.len() < 6 || reply[0] != 0x01 || reply[2] != 0x02 || reply[3] != 0x00 {
+        return None;
+    }
+    let tenths = u16::from_le_bytes([reply[4], reply[5]]);
+    (1..=1000)
+        .contains(&tenths)
+        .then(|| ((tenths + 5) / 10) as u8)
+}
 
 pub const BRAGI: Driver = Driver {
     name: "Corsair Bragi",
@@ -211,6 +255,40 @@ fn read_bragi(group: &[HidInfo], product: &str) -> Vec<crate::model::Reading> {
     Vec::new()
 }
 
+#[cfg(windows)]
+fn read_v2w(group: &[HidInfo], _product: &str) -> Vec<crate::model::Reading> {
+    use crate::model::{Kind, Link, Reading};
+    use crate::win::hid::{Session, Via};
+    use std::time::Duration;
+
+    let Some(name) = group.first().and_then(|i| v2w_name(i.pid)) else {
+        return Vec::new();
+    };
+    let writers = group
+        .iter()
+        .filter(|i| i.interface == V2W_INTERFACE && i.output_len >= V2W_BATTERY_REQUEST.len());
+    for info in writers {
+        let Some(mut session) = Session::open(group, info) else {
+            continue;
+        };
+        // The receiver answers 0 or garbage for a moment after the headset wakes up.
+        for _ in 0..3 {
+            let reply = session.ask(
+                &V2W_BATTERY_REQUEST,
+                Via::Output,
+                Duration::from_millis(900),
+                |r| r.len() >= 6 && r[0] == 0x01 && r[2] == 0x02,
+            );
+            let Some(reply) = reply else { break };
+            if let Some(level) = parse_v2w(&reply) {
+                let id = format!("corsair:{:04x}:{}", info.pid, super::instance_of(info));
+                return vec![Reading::new(id, name, Kind::Headset, Link::Rf24).battery(Some(level))];
+            }
+        }
+    }
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,5 +331,25 @@ mod tests {
             [0],
             "wired device answers for itself"
         );
+    }
+
+    #[test]
+    fn wireless_v2() {
+        use crate::vendor::collection;
+        let receiver = [collection(VID_CORSAIR, 0x2A08, 0xFF42, 1, 4, (64, 65, 0))];
+        assert!(is_v2w(&receiver) && !is_bragi(&receiver));
+        assert_eq!(parse_v2w(&[0x01, 0x01, 0x02, 0x00, 0xE8, 0x03]), Some(100));
+        assert_eq!(parse_v2w(&[0x01, 0x01, 0x02, 0x00, 0x6B, 0x02]), Some(62));
+        assert_eq!(
+            parse_v2w(&[0x01, 0x01, 0x02, 0x00, 0x00, 0x00]),
+            None,
+            "not ready"
+        );
+        assert_eq!(
+            parse_v2w(&[0x01, 0x01, 0x02, 0x05, 0x6B, 0x02]),
+            None,
+            "error status"
+        );
+        assert_eq!(parse_v2w(&[0x01, 0x01, 0x02, 0x00, 0xFF, 0x0F]), None);
     }
 }

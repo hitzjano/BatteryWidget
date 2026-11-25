@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::hid::{enumerate, interface_paths, product_string};
+use super::jbl_ble::JblSpeakers;
 use super::xbox::Xbox;
 use crate::hid::{vid_pid_from_path, HidInfo};
 use crate::model::{Kind, Reading};
@@ -116,13 +117,27 @@ fn vendor_paths() -> Vec<String> {
     paths
 }
 
+/// Which parts of this worker run.
+#[derive(Clone, Copy, Debug)]
+pub struct Enabled {
+    pub vendor_hid: bool,
+    pub controllers: bool,
+    pub le_speakers: bool,
+}
+
 /// Worker loop: scan at start, every 20 s while a device is connected (every minute
 /// otherwise), on request, when a controller (dis)connects and when a HID device of a
-/// supported vendor appears or disappears.
-pub fn run(wake: Arc<Wake>, vendor_hid: bool, controllers: bool, emit: impl Fn(Vec<Reading>)) {
+/// supported vendor appears or disappears. LE speakers pace themselves (minutes).
+pub fn run(wake: Arc<Wake>, enabled: Enabled, emit: impl Fn(Vec<Reading>)) {
+    let Enabled {
+        vendor_hid,
+        controllers,
+        le_speakers,
+    } = enabled;
     super::init_winrt_thread();
     let mut scanner = VendorScanner::default();
     let mut xbox = Xbox::default();
+    let mut speakers = JblSpeakers::default();
     while !wake.is_stopped() {
         let known = if vendor_hid {
             vendor_paths()
@@ -136,6 +151,9 @@ pub fn run(wake: Arc<Wake>, vendor_hid: bool, controllers: bool, emit: impl Fn(V
         };
         if controllers {
             readings.extend(xbox.read(&wake));
+        }
+        if le_speakers {
+            readings.extend(speakers.read());
         }
         let active = readings.iter().any(|r| r.connected && !r.idle);
         emit(readings);

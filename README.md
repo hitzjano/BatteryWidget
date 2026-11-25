@@ -5,8 +5,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-blue)
 
-Battery levels of your wireless mouse, keyboard, headset and controller, right in the
-Windows taskbar. One small native executable: no installer, no service, no driver, no
+Battery levels of your wireless mouse, keyboard, headset, controller and JBL speaker,
+right in the Windows taskbar. One small native executable: no installer, no service, no driver, no
 account, no telemetry.
 
 ![BatteryWidget in the Windows 11 taskbar](docs/screenshots/taskbar.png)
@@ -17,7 +17,7 @@ account, no telemetry.
 
 *Screenshots show the built-in sample devices (`--demo`).*
 
-> **Project status: 0.1.4, early.** The application itself is tested on Windows 11 and
+> **Project status: 0.1.5, early.** The application itself is tested on Windows 11 and
 > the protocol logic is covered by unit tests, but the device protocols have not yet
 > been verified on real hardware. See
 > [Supported devices](#supported-devices) and please [report](CONTRIBUTING.md) what works.
@@ -32,12 +32,13 @@ account, no telemetry.
 - **Tray icon** that shows the lowest battery level at a glance; every setting lives in
   its context menu.
 - **Many sources, one list**: Bluetooth, Logitech receivers, Logitech G HUB, gaming
-  peripherals of several brands and game controllers are merged and de-duplicated.
+  peripherals of several brands (Razer, Corsair, HyperX, SteelSeries, ASUS ROG, JBL),
+  game controllers and JBL speakers are merged and de-duplicated.
 - **Hot-plug**: devices appear and disappear as they connect; sleeping devices keep
   their last level, dimmed.
 - **Notifications** for low battery and (optionally) full charge.
 - **Windows 11 native**: per-monitor DPI aware, follows dark/light theme, multi-monitor.
-- **Light**: a single executable of about 0.9 MB, around 17 MB of memory, event driven,
+- **Light**: a single executable of about 1 MB, around 17 MB of memory, event driven,
   draws only when something changes.
 - **Private**: no network access except the optional G HUB socket on `127.0.0.1`.
   Devices are only ever *asked* for their battery level, never configured.
@@ -130,15 +131,21 @@ its specification, but not yet confirmed on hardware by the maintainers.
 | PlayStation | DualSense, DualSense Edge, DualShock 4 (USB, Bluetooth, Sony adapter) | Implemented |
 | Xbox | Controllers known to `Windows.Gaming.Input` / XInput | Implemented |
 | Razer | Wireless mice and keyboards using the 90-byte report protocol | Implemented |
-| Corsair | Void / HS / Virtuoso headsets, Slipstream (Bragi) mice and keyboards | Implemented |
-| HyperX | Cloud II Wireless, Cloud Stinger 2 Wireless, Cloud Alpha Wireless, Cloud III Wireless, Pulsefire Dart | Implemented |
-| SteelSeries | Arctis 1 Wireless, Arctis 7, Arctis Nova 7 | Implemented |
+| Corsair | Void / HS / Virtuoso headsets; Void Wireless v2, Virtuoso MAX Wireless, HS80 MAX Wireless; Slipstream (Bragi) mice and keyboards | Implemented |
+| HyperX | Cloud II Wireless (HP and Kingston), Cloud Stinger 2 Wireless, Cloud Flight, Cloud Alpha Wireless, Cloud Alpha 2 Wireless, Cloud III Wireless, Pulsefire Dart | Implemented |
+| SteelSeries | Headsets: Arctis 1 Wireless, Arctis 7 / Pro 2019, Arctis 7+, Arctis 9, Arctis Nova 3P / 3X Wireless, Nova 5 / 5X, Nova 7 / 7X / 7P, Nova Pro Wireless. Mice: Aerox 3 / 5 / 9 Wireless, Prime (Mini) Wireless, Rival 3 Wireless (Gen 2), Rival 650 Wireless | Implemented |
+| ASUS ROG / TUF | On their dongle, cable or ROG Omni receiver. Mice: Gladius II / III Wireless (incl. AimPoint, EVA-02), Keris Wireless (incl. EVA, AimPoint), Keris II Ace / Origin, Harpe Ace (Aim Lab, Extreme, Mini), Harpe II Ace, Chakram, Chakram X, Pugio II, Spatha X, Strix Carry, Strix Impact II / III Wireless, TUF Gaming M4 Wireless, TX / TUF Gaming Mini, MD200, MD301. Keyboards: Azoth (incl. Extreme, X), Falchion (incl. RX Low Profile), Strix Scope II 96 (RX) Wireless, Strix Scope RX TKL Wireless, Claymore II. Headsets: Delta II, Pelta, Cetra SpeedNova | Implemented |
+| JBL | Quantum 810 Wireless, Quantum 910P Wireless, Quantum 950 Wireless (USB dongle); Charge 3/4/5/6, Flip 4/5/6/7, Xtreme 2/3/4, Pulse 3/4/5, Boombox/2/3, Go 4 (incl. Duo), Clip 5, Tuner 3 speakers (Bluetooth LE, while paired and connected; not the Wi-Fi models, Boombox 4, Xtreme 5, Go 5, Grip, Essential 3 SE) | Implemented |
 
 Good to know:
 
 - Bluetooth levels come from Windows and are often coarse (steps of 10 or 25 %). Windows
   does not report whether a Bluetooth device is charging; a rising level is shown as
   charging (estimated).
+- JBL dongles do not report whether the headset is charging.
+- JBL speakers are asked over their own Bluetooth LE service at most every 5
+  minutes (part of the *Bluetooth* source). While BatteryWidget asks, which takes a few
+  seconds, the JBL Portable app cannot connect to the speaker.
 - Vendor software (G HUB, iCUE, Synapse, …) may hold a receiver exclusively. BatteryWidget
   then leaves that receiver alone and retries later.
 - Not supported yet: devices whose protocol is not publicly documented well enough to
@@ -150,8 +157,10 @@ Protocol details are in [docs/PROTOCOLS.md](docs/PROTOCOLS.md).
 
 ```
 crates/core   battery-widget-core: all device logic, no UI
-  ├─ bluetooth, hidpp, ghub, vendor   protocol logic (pure, unit-tested on any OS)
-  ├─ win/                             Windows I/O: HID, WinRT enumeration, controllers
+  ├─ bluetooth, hidpp, ghub, vendor,  protocol logic (pure, unit-tested on any OS)
+  │  jbl_ble
+  ├─ win/                             Windows I/O: HID, WinRT enumeration, controllers,
+  │                                   Bluetooth LE (JBL speakers)
   ├─ merge                            fusion of all sources into one device list
   └─ hub                              one worker thread per source → channel → snapshots
 crates/app    battery-widget: tray icon, Direct2D widget window, settings
@@ -179,8 +188,15 @@ The unit tests need no hardware and also run on Linux and macOS. See
 
 Protocol knowledge comes from public documentation and the work of open-source
 projects, in particular [Solaar](https://github.com/pwr-Solaar/Solaar) (Logitech HID++),
-[OpenRazer](https://github.com/openrazer/openrazer) and
-[HeadsetControl](https://github.com/Sapd/HeadsetControl).
+[OpenRazer](https://github.com/openrazer/openrazer),
+[HeadsetControl](https://github.com/Sapd/HeadsetControl),
+[rivalcfg](https://github.com/flozz/rivalcfg) (SteelSeries mice),
+[G-Helper](https://github.com/seerge/g-helper) (ASUS ROG),
+[jbl-charge5](https://github.com/hudsonbrendon/jbl-charge5) and
+[JBLControl](https://github.com/ffrafat/JBLControl) (JBL speakers), and
+[jbl-quantum-engine-linux](https://github.com/umarabdullah23/jbl-quantum-engine-linux),
+[HeadsetControlLinux](https://github.com/AEVYEN/HeadsetControlLinux) and
+[MyJBxHeadsetControl](https://github.com/666mille/MyJBxHeadsetControl) (JBL Quantum).
 
 BatteryWidget is an independent project and is not affiliated with or endorsed by any
 of the hardware vendors mentioned. All product names are trademarks of their owners.

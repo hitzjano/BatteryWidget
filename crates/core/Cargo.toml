@@ -24,12 +24,15 @@ windows-collections.workspace = true
 workspace = true
 features = [
     "Devices_Bluetooth",
+    "Devices_Bluetooth_Advertisement",
+    "Devices_Bluetooth_GenericAttributeProfile",
     "Devices_Enumeration",
     "Devices_Power",
     "Devices_Radios",
     "Foundation",
     "Foundation_Collections",
     "Gaming_Input",
+    "Storage_Streams",
     "System_Power",
     "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Devices_HumanInterfaceDevice",
