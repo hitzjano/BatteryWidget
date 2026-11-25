@@ -124,11 +124,12 @@ pub fn parse_battery(stream: &[u8]) -> Option<(u8, bool)> {
     None
 }
 
-/// `00 44 <value>`, or with an explicit value length `00 44 01 <value>`.
+/// `00 44 <value>`, or with an explicit value length `00 44 01 <value>`; any further
+/// bytes after the value are ignored (as JBLControl does).
 fn battery_token(payload: &[u8]) -> Option<u8> {
     match payload {
-        [_, TOKEN_BATTERY, value] => Some(*value),
         [_, TOKEN_BATTERY, 1, value] => Some(*value),
+        [_, TOKEN_BATTERY, value, ..] => Some(*value),
         _ => None,
     }
 }
@@ -223,6 +224,11 @@ mod tests {
         assert_eq!(
             parse_battery(&[0xAA, 0x12, 0x04, 0x00, 0x44, 0x01, 0x32]),
             Some((50, false))
+        );
+        assert_eq!(
+            parse_battery(&[0xAA, 0x12, 0x04, 0x00, 0x44, 0x3C, 0x00]),
+            Some((60, false)),
+            "trailing byte"
         );
     }
 

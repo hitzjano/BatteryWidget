@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-11-25
+
+### Fixed
+
+- JBL speakers were found and connected but never showed a level: Windows answers the
+  lookup of the speaker's control service with an empty list right after connecting
+  (seen on a Charge 5 that is also paired as an audio device). BatteryWidget now falls
+  back to the complete service list, connects with the advertised address type, prefers
+  connectable advertisements and keeps the LE link open until the speaker has answered.
+  Confirmed on a JBL Charge 5.
+
+### Changed
+
+- The charging bolt stays while a fully charged device is still plugged in, so a full
+  device on its charger no longer looks the same as one that is not plugged in. This
+  needs a device that reports being plugged in; Bluetooth devices through Windows do not.
+- `--demo` includes a full speaker that is still on its charger.
+
 ## [0.1.5] - 2026-11-25
 
 ### Added
@@ -138,7 +156,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Low-battery and fully-charged notifications with hysteresis and cool-down.
 - Optional start with Windows (per-user `Run` key).
 
-[Unreleased]: https://github.com/hitzjano/BatteryWidget/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/hitzjano/BatteryWidget/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/hitzjano/BatteryWidget/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/hitzjano/BatteryWidget/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/hitzjano/BatteryWidget/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/hitzjano/BatteryWidget/compare/v0.1.2...v0.1.3

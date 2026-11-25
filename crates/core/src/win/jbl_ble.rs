@@ -11,14 +11,17 @@ use std::time::{Duration, Instant};
 
 use windows::core::{Interface, Result, GUID, HSTRING};
 use windows::Devices::Bluetooth::Advertisement::{
-    BluetoothLEAdvertisementReceivedEventArgs, BluetoothLEAdvertisementWatcher,
-    BluetoothLEScanningMode,
+    BluetoothLEAdvertisementReceivedEventArgs, BluetoothLEAdvertisementType,
+    BluetoothLEAdvertisementWatcher, BluetoothLEScanningMode,
 };
 use windows::Devices::Bluetooth::GenericAttributeProfile::{
     GattCharacteristic, GattClientCharacteristicConfigurationDescriptorValue,
-    GattCommunicationStatus, GattValueChangedEventArgs, GattWriteOption,
+    GattCommunicationStatus, GattDeviceService, GattSession, GattValueChangedEventArgs,
+    GattWriteOption,
 };
-use windows::Devices::Bluetooth::{BluetoothCacheMode, BluetoothDevice, BluetoothLEDevice};
+use windows::Devices::Bluetooth::{
+    BluetoothAddressType, BluetoothCacheMode, BluetoothDevice, BluetoothLEDevice,
+};
 use windows::Devices::Enumeration::DeviceInformation;
 use windows::Foundation::TypedEventHandler;
 use windows::Storage::Streams::{DataReader, DataWriter, IBuffer};
@@ -43,10 +46,33 @@ const REPLY_TIME: Duration = Duration::from_secs(3);
 /// How often the paired device list is checked for a newly connected speaker.
 const PAIRED_CHECK: Duration = Duration::from_secs(60);
 
+/// LE address and its type (public or random), as advertised.
+#[derive(Clone, Copy)]
+struct Address {
+    value: u64,
+    kind: BluetoothAddressType,
+}
+
+impl std::fmt::Display for Address {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let b = self.value.to_be_bytes();
+        let kind = if self.kind == BluetoothAddressType::Random {
+            "random"
+        } else {
+            "public"
+        };
+        write!(
+            f,
+            "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X} ({kind})",
+            b[2], b[3], b[4], b[5], b[6], b[7]
+        )
+    }
+}
+
 struct Speaker {
     /// Name of the paired (classic) device, used to merge with the Bluetooth entry.
     paired_name: String,
-    address: Option<u64>,
+    address: Option<Address>,
     reading: Option<(Instant, Reading)>,
     next: Instant,
     failures: u32,
@@ -185,9 +211,10 @@ fn query(model: &'static Model, speaker: &mut Speaker) -> Option<(u8, bool)> {
     }
 }
 
-/// Listen to advertisements until one of `model` shows up; returns its LE address.
-fn scan_for(model: &'static Model) -> Result<Option<u64>> {
-    let found: Arc<Mutex<Option<u64>>> = Arc::default();
+/// Listen to advertisements until a connectable one of `model` shows up; returns its LE
+/// address. A non-connectable one (some speakers also send beacons) is only a fallback.
+fn scan_for(model: &'static Model) -> Result<Option<Address>> {
+    let found: Arc<Mutex<Option<(Address, bool)>>> = Arc::default();
     let watcher = BluetoothLEAdvertisementWatcher::new()?;
     // Active: the manufacturer data may only be in the scan response.
     watcher.SetScanningMode(BluetoothLEScanningMode::Active)?;
@@ -207,7 +234,20 @@ fn scan_for(model: &'static Model) -> Result<Option<u64>> {
             if model_for_advertisement(entry.CompanyId()?, &data)
                 .is_some_and(|m| std::ptr::eq(m, model))
             {
-                *sink.lock().unwrap_or_else(|p| p.into_inner()) = Some(args.BluetoothAddress()?);
+                let kind = args.AdvertisementType()?;
+                let connectable = kind == BluetoothLEAdvertisementType::ConnectableUndirected
+                    || kind == BluetoothLEAdvertisementType::ConnectableDirected;
+                let address = Address {
+                    value: args.BluetoothAddress()?,
+                    kind: args
+                        .BluetoothAddressType()
+                        .unwrap_or(BluetoothAddressType::Unspecified),
+                };
+                log::debug!("JBL advertisement from {address}, type {kind:?}");
+                let mut slot = sink.lock().unwrap_or_else(|p| p.into_inner());
+                if !slot.is_some_and(|(_, c)| c) {
+                    *slot = Some((address, connectable));
+                }
             }
         }
         Ok(())
@@ -216,8 +256,8 @@ fn scan_for(model: &'static Model) -> Result<Option<u64>> {
     let deadline = Instant::now() + SCAN_TIME;
     let address = loop {
         let address = *found.lock().unwrap_or_else(|p| p.into_inner());
-        if address.is_some() || Instant::now() >= deadline {
-            break address;
+        if address.is_some_and(|(_, connectable)| connectable) || Instant::now() >= deadline {
+            break address.map(|(a, _)| a);
         }
         std::thread::sleep(Duration::from_millis(100));
     };
@@ -227,26 +267,38 @@ fn scan_for(model: &'static Model) -> Result<Option<u64>> {
 }
 
 /// Connect, ask for the speaker info, collect the notification burst, disconnect.
-fn ask_battery(address: u64) -> Result<Option<(u8, bool)>> {
-    let device = BluetoothLEDevice::FromBluetoothAddressAsync(address)?.join()?;
+fn ask_battery(address: Address) -> Result<Option<(u8, bool)>> {
+    let device = if address.kind == BluetoothAddressType::Unspecified {
+        BluetoothLEDevice::FromBluetoothAddressAsync(address.value)?.join()?
+    } else {
+        BluetoothLEDevice::FromBluetoothAddressWithBluetoothAddressTypeAsync(
+            address.value,
+            address.kind,
+        )?
+        .join()?
+    };
+    // Without this Windows may drop the idle LE link before the notifications arrive.
+    let session = GattSession::FromDeviceIdAsync(&device.BluetoothDeviceId()?)
+        .and_then(|op| op.join())
+        .inspect_err(|e| log::debug!("GATT session failed: {e}"))
+        .ok();
+    if let Some(session) = &session {
+        let _ = session.SetMaintainConnection(true);
+    }
     let result = (|| {
-        let services = device
-            .GetGattServicesForUuidWithCacheModeAsync(
-                GUID::from_u128(SERVICE_UUID),
-                BluetoothCacheMode::Uncached,
-            )?
-            .join()?;
-        if services.Status()? != GattCommunicationStatus::Success
-            || services.Services()?.Size()? == 0
-        {
+        let Some(service) = control_service(&device)? else {
+            log::debug!(
+                "JBL: control service not found at {address}; services: {}",
+                service_list(&device)
+            );
             return Ok(None);
-        }
-        let service = services.Services()?.GetAt(0)?;
+        };
         let outcome = (|| {
             let (Some(rx), Some(tx)) = (
                 characteristic(&service, NOTIFY_UUID)?,
                 characteristic(&service, WRITE_UUID)?,
             ) else {
+                log::debug!("JBL: control characteristics not found");
                 return Ok(None);
             };
             exchange(&rx, &tx)
@@ -255,26 +307,85 @@ fn ask_battery(address: u64) -> Result<Option<(u8, bool)>> {
         outcome
     })();
     // Closing the device object drops the LE link once nothing else uses it.
+    if let Some(session) = session {
+        let _ = session.SetMaintainConnection(false);
+        let _ = session.Close();
+    }
     let _ = device.Close();
     result
 }
 
-fn characteristic(
-    service: &windows::Devices::Bluetooth::GenericAttributeProfile::GattDeviceService,
-    uuid: u128,
-) -> Result<Option<GattCharacteristic>> {
-    let found = service
-        .GetCharacteristicsForUuidAsync(GUID::from_u128(uuid))?
+/// The control service. Asked for by its UUID right after connecting, Windows can answer
+/// with an empty list (seen on a Charge 5 paired as a classic device) while the complete
+/// list, read next, contains it; so the complete list is the fallback.
+fn control_service(device: &BluetoothLEDevice) -> Result<Option<GattDeviceService>> {
+    let wanted = GUID::from_u128(SERVICE_UUID);
+    let by_uuid = device
+        .GetGattServicesForUuidWithCacheModeAsync(wanted, BluetoothCacheMode::Uncached)?
         .join()?;
-    if found.Status()? != GattCommunicationStatus::Success {
-        return Ok(None);
+    if by_uuid.Status()? == GattCommunicationStatus::Success && by_uuid.Services()?.Size()? > 0 {
+        return Ok(Some(by_uuid.Services()?.GetAt(0)?));
     }
-    let all = found.Characteristics()?;
-    Ok(if all.Size()? > 0 {
-        Some(all.GetAt(0)?)
-    } else {
-        None
-    })
+    for mode in [BluetoothCacheMode::Uncached, BluetoothCacheMode::Cached] {
+        let all = device.GetGattServicesWithCacheModeAsync(mode)?.join()?;
+        if all.Status()? != GattCommunicationStatus::Success {
+            continue;
+        }
+        let services = all.Services()?;
+        for i in 0..services.Size()? {
+            let service = services.GetAt(i)?;
+            if service.Uuid()? == wanted {
+                return Ok(Some(service));
+            }
+            let _ = service.Close();
+        }
+    }
+    Ok(None)
+}
+
+/// Every service the device offers, for the debug log.
+fn service_list(device: &BluetoothLEDevice) -> String {
+    let list = || -> Result<String> {
+        let all = device
+            .GetGattServicesWithCacheModeAsync(BluetoothCacheMode::Uncached)?
+            .join()?;
+        let services = all.Services()?;
+        let mut uuids = Vec::new();
+        for i in 0..services.Size()? {
+            let uuid = services.GetAt(i)?.Uuid()?;
+            uuids.push(format!("{:032x}", uuid.to_u128()));
+        }
+        Ok(format!("{:?} [{}]", all.Status()?, uuids.join(", ")))
+    };
+    list().unwrap_or_else(|e| format!("query failed: {e}"))
+}
+
+/// A characteristic of the control service; like [`control_service`], the complete list
+/// is the fallback when the lookup by UUID comes back empty.
+fn characteristic(service: &GattDeviceService, uuid: u128) -> Result<Option<GattCharacteristic>> {
+    let wanted = GUID::from_u128(uuid);
+    let by_uuid = service
+        .GetCharacteristicsForUuidWithCacheModeAsync(wanted, BluetoothCacheMode::Uncached)?
+        .join()?;
+    if by_uuid.Status()? == GattCommunicationStatus::Success
+        && by_uuid.Characteristics()?.Size()? > 0
+    {
+        return Ok(Some(by_uuid.Characteristics()?.GetAt(0)?));
+    }
+    for mode in [BluetoothCacheMode::Uncached, BluetoothCacheMode::Cached] {
+        let all = service.GetCharacteristicsWithCacheModeAsync(mode)?.join()?;
+        if all.Status()? != GattCommunicationStatus::Success {
+            continue;
+        }
+        let list = all.Characteristics()?;
+        for i in 0..list.Size()? {
+            let characteristic = list.GetAt(i)?;
+            if characteristic.Uuid()? == wanted {
+                return Ok(Some(characteristic));
+            }
+        }
+    }
+    Ok(None)
 }
 
 fn exchange(rx: &GattCharacteristic, tx: &GattCharacteristic) -> Result<Option<(u8, bool)>> {
@@ -297,6 +408,7 @@ fn exchange(rx: &GattCharacteristic, tx: &GattCharacteristic) -> Result<Option<(
             )?
             .join()?;
         if status != GattCommunicationStatus::Success {
+            log::debug!("JBL: enabling notifications failed: {status:?}");
             return Ok(None);
         }
         let writer = DataWriter::new()?;
@@ -305,12 +417,17 @@ fn exchange(rx: &GattCharacteristic, tx: &GattCharacteristic) -> Result<Option<(
             .WriteValueWithOptionAsync(&writer.DetachBuffer()?, GattWriteOption::WriteWithResponse)?
             .join()?;
         if status != GattCommunicationStatus::Success {
+            log::debug!("JBL: writing the request failed: {status:?}");
             return Ok(None);
         }
         let deadline = Instant::now() + REPLY_TIME;
         loop {
-            let level = parse_battery(&received.lock().unwrap_or_else(|p| p.into_inner()));
+            let stream = received.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            let level = parse_battery(&stream);
             if level.is_some() || Instant::now() >= deadline {
+                if level.is_none() {
+                    log::debug!("JBL reply: {} bytes: {}", stream.len(), hex(&stream));
+                }
                 return Ok(level);
             }
             std::thread::sleep(Duration::from_millis(100));
@@ -323,6 +440,13 @@ fn exchange(rx: &GattCharacteristic, tx: &GattCharacteristic) -> Result<Option<(
         let _ = op.join();
     }
     outcome
+}
+
+/// The first bytes as hex, for the debug log.
+fn hex(data: &[u8]) -> String {
+    let shown: Vec<String> = data.iter().take(96).map(|b| format!("{b:02X}")).collect();
+    let more = if data.len() > 96 { " …" } else { "" };
+    format!("{}{more}", shown.join(" "))
 }
 
 fn bytes(buffer: &IBuffer) -> Result<Vec<u8>> {

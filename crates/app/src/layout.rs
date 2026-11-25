@@ -71,10 +71,13 @@ impl Display {
         matches!(self, Display::IconPercent | Display::BarPercent)
     }
 
-    /// Does this pill need the charging bolt next to the battery? With an unknown level
+    /// Does this pill need the charging bolt next to the battery? Also while a full device
+    /// is still plugged in. With an unknown level
     /// the big battery has no text inside, so the bolt goes in there instead.
     pub fn needs_bolt_beside(self, device: &Device, label: &str) -> bool {
-        device.charging && self.bolt_beside() && !(self == Display::BarPercent && label.is_empty())
+        device.plugged_in()
+            && self.bolt_beside()
+            && !(self == Display::BarPercent && label.is_empty())
     }
 }
 
@@ -485,6 +488,17 @@ mod tests {
             width(&devices, Display::BarPercent),
             14.0 + ICON_BOX + ITEM_GAP + BIG_BATTERY_WIDTH + BATTERY_NUB + BOLT_SLOT
         );
+
+        // Full and still plugged in: the bolt stays.
+        devices[0].charging = false;
+        devices[0].full = true;
+        assert_eq!(
+            width(&devices, Display::IconPercent),
+            full - ITEM_GAP - 24.0 + BOLT_SLOT
+        );
+        devices[0].full = false;
+        devices[0].charging = true;
+
         // Charging with an unknown level: only the bolt, no percentage and no dash.
         let bar_only = width(&devices, Display::IconBar);
         devices[0].battery = None;

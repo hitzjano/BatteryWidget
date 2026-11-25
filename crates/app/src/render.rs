@@ -534,7 +534,7 @@ impl Painter<'_> {
                     let tint = theme::with_alpha(self.palette.text, dim);
                     self.text(label, &self.inner, x, width, tint);
                 }
-                None if device.charging => {
+                None if device.plugged_in() => {
                     self.bolt(x + width / 2.0, y + height / 2.0, height + self.s(4.0), dim)?;
                 }
                 None => {}

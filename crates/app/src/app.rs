@@ -213,6 +213,18 @@ fn demo_devices() -> Vec<Device> {
             true,
             false,
         ),
+        // Full and still on its charger: the bolt stays.
+        Device {
+            full: true,
+            ..device(
+                "JBL Charge 5",
+                Kind::Speaker,
+                Link::Bluetooth,
+                Some(100),
+                false,
+                false,
+            )
+        },
     ]
 }
 

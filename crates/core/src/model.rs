@@ -138,6 +138,11 @@ impl Device {
     pub fn is_active(&self) -> bool {
         self.connected || self.idle
     }
+
+    /// On its charger: charging, or full while still plugged in. Shown with the bolt.
+    pub fn plugged_in(&self) -> bool {
+        self.charging || self.full
+    }
 }
 
 /// Clamp any numeric level into a valid percentage.

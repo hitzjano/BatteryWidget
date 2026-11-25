@@ -130,7 +130,8 @@ such a speaker is paired and connected: find its LE address by an advertisement 
 company id `0x0057` and the product id little endian at the start of the manufacturer
 data (6 s active scan, only while the address is unknown), connect, enable
 notifications, write `AA 11 00` (speaker info), collect the `AA 12 <len> 00 <token> …`
-burst for up to 3 s, disconnect. Token `0x44`: low 7 bits percent, bit 7 charging.
+burst for up to 3 s, disconnect. Windows may answer the service lookup by UUID with an
+empty list right after connecting; the complete service list is the fallback. Token `0x44`: low 7 bits percent, bit 7 charging.
 Every 5 minutes, at most one speaker per round. A failure forgets the (rotating) address
 and waits 10, 20, 40, then 60 minutes. Not covered: Wi-Fi and classic-only models, and
 the `DD 00` generation (Boombox 4, Xtreme 5, Go 5, Grip, Essential 3 SE), for which no
